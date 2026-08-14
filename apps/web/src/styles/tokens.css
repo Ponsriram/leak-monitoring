@@ -1,0 +1,113 @@
+/**
+ * Design tokens. One styling approach for the whole app — plain CSS with custom properties.
+ *
+ * The old client shipped a .css AND a .scss for every component while `sass` wasn't even a
+ * dependency, so twelve SCSS files were dead weight drifting from what actually rendered.
+ * There is exactly one stylesheet system here.
+ *
+ * Light is the base; dark is redefined at token level under both the OS media query and the
+ * explicit [data-theme] stamp, so a toggle wins in either direction.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces — neutrals carry a slight cool bias toward the accent, not flat grey */
+  --bg: #f1f4f5;
+  --surface: #ffffff;
+  --surface-2: #e7ecee;
+  --surface-hover: #edf1f2;
+
+  /* ink */
+  --text: #10171a;
+  --text-2: #45575c;
+  --muted: #6a7e84;
+
+  --border: #d5dfe1;
+  --border-2: #bccacd;
+
+  /* accent */
+  --accent: #0b6e78;
+  --accent-hover: #095a63;
+  --accent-ink: #ffffff;
+  --accent-wash: #dcebec;
+
+  /* chart series — validated against the surface below (see dataviz palette) */
+  --series-1: #2a78d6;
+  --series-1-fill: rgba(42, 120, 214, 0.14);
+
+  /* status — fixed, never themed. Always paired with an icon + text label, never
+     color alone: warning/serious sit below 3:1 on a light surface by design. */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  --grid: rgba(16, 23, 26, 0.08);
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --shadow: 0 1px 2px rgba(16, 23, 26, 0.05), 0 8px 24px -14px rgba(16, 23, 26, 0.2);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg: #0d1214;
+    --surface: #171a1d;
+    --surface-2: #1e2529;
+    --surface-hover: #222a2e;
+
+    --text: #e3ebec;
+    --text-2: #adbfc2;
+    --muted: #7c9095;
+
+    --border: #263236;
+    --border-2: #33454a;
+
+    --accent: #4fc6ce;
+    --accent-hover: #7fdde3;
+    --accent-ink: #06282b;
+    --accent-wash: #10292c;
+
+    --series-1: #3987e5;
+    --series-1-fill: rgba(57, 135, 229, 0.18);
+
+    --grid: rgba(227, 235, 236, 0.09);
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px -16px rgba(0, 0, 0, 0.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0d1214;
+  --surface: #171a1d;
+  --surface-2: #1e2529;
+  --surface-hover: #222a2e;
+
+  --text: #e3ebec;
+  --text-2: #adbfc2;
+  --muted: #7c9095;
+
+  --border: #263236;
+  --border-2: #33454a;
+
+  --accent: #4fc6ce;
+  --accent-hover: #7fdde3;
+  --accent-ink: #06282b;
+  --accent-wash: #10292c;
+
+  --series-1: #3987e5;
+  --series-1-fill: rgba(57, 135, 229, 0.18);
+
+  --grid: rgba(227, 235, 236, 0.09);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px -16px rgba(0, 0, 0, 0.7);
+}

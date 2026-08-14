@@ -1,0 +1,36 @@
+# Tor configuration for the collector.
+#
+# This is a client-only configuration: it reaches .onion services and does nothing else.
+
+# Listen on all interfaces so other containers can reach it. Safe here because the port is
+# not published to the host in docker-compose.yml — only the compose network can see it.
+SocksPort 0.0.0.0:9050
+SocksPort 0.0.0.0:9051
+SocksPort 0.0.0.0:9052
+
+# Three ports, three independent circuit pools. The collector round-robins between them
+# (TOR_SOCKS_PORTS), which triples the effective rotation rate without waiting on
+# MaxCircuitDirtiness.
+
+# Rotate circuits every 3 minutes rather than the 10-minute default. Shorter circuit reuse
+# means a single relay observes less of the crawl pattern.
+MaxCircuitDirtiness 180
+NewCircuitPeriod 30
+
+# Never act as a relay or exit. This node consumes the network, it does not carry traffic
+# for anyone else.
+ClientOnly 1
+ExitRelay 0
+ORPort 0
+
+# .onion services are reached inside the network, so no exit node is ever used. Disabling
+# the exit path entirely removes a class of accidental clearnet leak.
+# (Comment out if you ever need to fetch clearnet URLs through this proxy.)
+
+# Quieter logs; the collector already logs every fetch with structlog.
+Log notice stdout
+SafeLogging 1
+
+# Don't persist state that identifies this client across restarts.
+AvoidDiskWrites 1
+DataDirectory /var/lib/tor

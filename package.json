@@ -1,0 +1,32 @@
+{
+  "name": "leak-monitoring",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run generate -w @leak/db",
+    "db:migrate": "npm run migrate -w @leak/db",
+    "db:studio": "npm run studio -w @leak/db",
+    "db:seed": "npm run seed -w @leak/db",
+    "api:dev": "npm run dev -w @leak/api",
+    "web:dev": "npm run dev -w @leak/web",
+    "infra:up": "docker compose --env-file .env -f infra/docker-compose.yml up -d",
+    "infra:up:full": "docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d --build",
+    "infra:down": "docker compose --env-file .env -f infra/docker-compose.yml --profile full down",
+    "infra:logs": "docker compose --env-file .env -f infra/docker-compose.yml --profile full logs -f",
+    "infra:backup": "bash scripts/backup-db.sh",
+    "intel": "docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d && docker compose --env-file .env -f infra/docker-compose.yml --profile full run --rm worker intel"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,160 @@
+# Local and single-host stack.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#       Datastores only (postgres + redis). This is the development default: you run the
+#       API and web app on the host with hot reload against these.
+#
+#   docker compose -f infra/docker-compose.yml --profile full up -d --build
+#       The whole system — adds tor, api, web and the collection worker. Nothing to run on
+#       the host; open http://localhost:8080.
+#
+# Profiles exist so `up` keeps doing what it did before rather than suddenly building four
+# images. From the repo root there are npm scripts for both (`infra:up`, `infra:up:full`).
+
+name: leakmon
+
+# Everything below reads from the repo-root .env, with defaults that work out of the box.
+# Override any of them there rather than editing this file.
+#
+# Note the DSN here is NOT the one in .env: host tooling reaches Postgres on
+# localhost:${POSTGRES_PORT}, while containers reach it at postgres:5432 on the compose
+# network. Same database, two routes.
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-leak}:${POSTGRES_PASSWORD:-leak_dev_password}@postgres:5432/${POSTGRES_DB:-leakmon}
+  REDIS_URL: redis://redis:6379
+
+services:
+  # ---------------------------------------------------------------- datastores
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: leakmon-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-leak}
+      # Default is a development password. Set POSTGRES_PASSWORD in .env before this
+      # database holds anything you care about or is reachable off this machine.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-leak_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-leakmon}
+      POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=en-US --encoding=UTF8"
+    ports:
+      # Host 5433, not 5432: a natively-installed PostgreSQL service may already own 5432,
+      # and if it does, host connections silently reach that instance instead of this one
+      # (you get "password authentication failed", not "connection refused").
+      # Container-internal port stays 5432.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      # Postgres 18+ images expect a single mount at /var/lib/postgresql and place the
+      # cluster in a major-version subdirectory below it. Mounting /var/lib/postgresql/data
+      # (the pre-18 convention) makes the entrypoint refuse to start.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-leak} -d ${POSTGRES_DB:-leakmon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:8-alpine
+    container_name: leakmon-redis
+    restart: unless-stopped
+    # Persist the queue so a restart doesn't drop scheduled crawls.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------- application
+
+  api:
+    profiles: ["full"]
+    build:
+      # Repo root: the API depends on the @leak/db workspace outside its own directory.
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: leakmon-api
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      API_HOST: 0.0.0.0
+      API_PORT: 5000
+      LOG_LEVEL: info
+      # The browser reaches the API through the web container's nginx, so the only origin
+      # that ever appears is the web app's.
+      CORS_ORIGINS: ${APP_URL:-http://localhost:8080}
+      AUTH_URL: ${APP_URL:-http://localhost:8080}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in the repo-root .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "5000"
+
+  web:
+    profiles: ["full"]
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Empty: nginx proxies /api to the api service, so the app talks to its own origin.
+        VITE_API_URL: ""
+    container_name: leakmon-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+  # ---------------------------------------------------------------- collection
+
+  tor:
+    profiles: ["full"]
+    build:
+      context: ./tor
+    container_name: leakmon-tor
+    restart: unless-stopped
+    # Deliberately NOT published to the host. Only containers on this network can use it,
+    # so nothing else on the machine can accidentally route through it.
+    expose:
+      - "9050"
+      - "9051"
+      - "9052"
+
+  worker:
+    profiles: ["full"]
+    build:
+      context: ../services/intel
+      dockerfile: Dockerfile
+    container_name: leakmon-worker
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      TOR_HOST: tor
+      TOR_SOCKS_PORTS: "${TOR_SOCKS_PORTS:-[9050,9051,9052]}"
+      CRAWL_CONCURRENCY: ${CRAWL_CONCURRENCY:-4}
+      INTEL_EXTRACTOR: ${INTEL_EXTRACTOR:-rules}
+      LOG_LEVEL: INFO
+    volumes:
+      # Mounted, not baked in. The image COPYs sources.yaml so it works standalone, but
+      # this overlay means editing the source list is a file edit plus `intel sources sync`
+      # — not an image rebuild. Read-only: the worker never writes its own config.
+      - ../services/intel/sources.yaml:/app/sources.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

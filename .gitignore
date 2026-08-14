@@ -1,0 +1,39 @@
+# --- dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- build output ---
+dist/
+build/
+*.tsbuildinfo
+
+# --- environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# --- data / artifacts (belongs in the database or object storage, not git) ---
+*.log
+logs/
+services/intel/data/
+services/intel/models/
+
+# --- editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# backups are data, not source
+backups/

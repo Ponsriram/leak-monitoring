@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI Postgres runs on the standard port — the 5433 mapping in docker-compose.yml only
+  # exists to dodge a natively-installed Postgres on a developer's Windows machine.
+  DATABASE_URL: postgresql://leak:leak_ci_password@localhost:5432/leakmon
+  AUTH_SECRET: ci-only-secret-not-used-outside-github-actions-0123456789
+  AUTH_URL: http://localhost:5000
+
+jobs:
+  # ---------------------------------------------------------------- node
+  node:
+    name: Node — typecheck, build, schema tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # These use PGlite (Postgres compiled to WASM), so they need no database service.
+      - name: Schema constraint tests
+        run: npm test -w @leak/db
+
+  # ---------------------------------------------------------------- api
+  api:
+    name: API — smoke test against Postgres
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: leak
+          POSTGRES_PASSWORD: leak_ci_password
+          POSTGRES_DB: leakmon
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U leak -d leakmon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build -w @leak/db
+
+      - name: Apply migrations
+        run: npm run db:migrate
+
+      - name: Seed
+        run: npm run db:seed
+
+      - name: Start API
+        run: |
+          npm run api:dev > /tmp/api.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -sf http://localhost:5000/readyz >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:5000/readyz || { cat /tmp/api.log; exit 1; }
+
+      - name: Smoke test
+        run: bash scripts/smoke-api.sh
+
+      - name: API logs on failure
+        if: failure()
+        run: cat /tmp/api.log
+
+  # ---------------------------------------------------------------- python
+  python:
+    name: Python — lint and tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: leak
+          POSTGRES_PASSWORD: leak_ci_password
+          POSTGRES_DB: leakmon
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U leak -d leakmon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # The Python service reads a schema Drizzle owns, so migrations must run first —
+      # otherwise the storage tests would skip and mask a real break.
+      - name: Apply migrations
+        run: |
+          npm ci
+          npm run build -w @leak/db
+          npm run db:migrate
+
+      - name: Lint
+        working-directory: services/intel
+        run: uv run ruff check intel tests
+
+      - name: Tests
+        working-directory: services/intel
+        run: uv run pytest -v
+
+      - name: Fail if storage tests were skipped
+        working-directory: services/intel
+        run: |
+          # These skip silently when Postgres is unreachable. In CI the database is always
+          # up, so a skip means the connection broke — which would hide a real regression
+          # in the upsert contract.
+          uv run pytest -q tests/test_storage_integration.py 2>&1 | tee /tmp/storage.txt
+          if grep -qE '[0-9]+ skipped' /tmp/storage.txt; then
+            echo "::error::storage integration tests skipped — Postgres was unreachable"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------- images
+  docker:
+    name: Docker — images build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only. Catches a broken Dockerfile without needing a registry.
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: services/intel
+          file: services/intel/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tor image
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/tor
+          push: false

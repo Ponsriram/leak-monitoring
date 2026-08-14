@@ -1,0 +1,25 @@
+LOCKBIT LEAKED DATA
+
+Northwind Logistics
+northwind.example
+Published: 2026-02-10
+Size: 1.2 TB
+Status: published
+International freight forwarding company. All internal documents, contracts and
+employee records have been released.
+
+Contoso Manufacturing Ltd
+contoso.example
+Published: 2026-03-15
+Size: 480 GB
+countdown: 3 days left
+Industrial equipment manufacturer. Negotiations ongoing.
+
+Fabrikam Health GmbH
+fabrikam.example
+15.04.2026
+Size: 2,5 TB
+sold
+Regional healthcare provider.
+
+Contact us on protonmail.com or via our mirror at lockbitapt2yfbt7lchxejug47kmqvqqxvvjpqkmevv4l3azl3gy6pyd.onion

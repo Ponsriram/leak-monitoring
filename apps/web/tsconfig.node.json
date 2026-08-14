@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // Requires @types/node in THIS workspace's devDependencies. It previously resolved only
+    // because npm hoisted @types/node from apps/api — which broke the moment the web image
+    // installed the web workspace alone.
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts"]
+}

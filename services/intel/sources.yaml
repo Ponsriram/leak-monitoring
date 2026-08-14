@@ -1,0 +1,363 @@
+# Monitored sources.
+#
+#     intel sources sync            # load this file into the database
+#     intel sources list --all      # see them and their crawl health
+#     intel sources enable <slug>   # start crawling one
+#
+# ------------------------------------------------------------------------------------------
+# EVERY SOURCE SHIPS DISABLED. Syncing does NOT start crawling. Reaching these hosts means
+# running Tor and connecting to live criminal infrastructure — a deliberate decision about
+# your legal and operational position, not a side effect of loading a config file.
+# ------------------------------------------------------------------------------------------
+#
+# Last reachability probe: 2026-08-14 — 83 legacy URLs tested, 30 responded, 53 dead.
+# The dead ones were removed. Leak sites rotate addresses and get seized constantly, so
+# re-probe periodically: `consecutive_failures` on each source tracks this automatically.
+#
+# collector:        http (fast, no JS) | browser (Playwright, for JS-rendered listings)
+# pagination_style: none | query (?page=N) | path (/page/N) | offset (?offset=N)
+#
+# ALL sources use `collector: http`.
+#
+# They were originally marked `browser` because the old crawler routed everything through
+# Selenium. That was wrong and expensive: the 2026-08-14 probe reached every one of them
+# over plain HTTP, while a full `browser` run timed out on six of them (cloak, funksec,
+# ijzn3sicrcy7, om6q4a6cyipx, ransomhouse, z3wqggtxft7i) — sites that plain HTTP had just
+# fetched successfully.
+#
+# `browser` launches Firefox per source and waits on page lifecycle events; `http` is one
+# async request. Only switch a source back to `browser` if its listings genuinely render
+# client-side and come back empty over HTTP.
+
+- slug: 3ev4metjiroh
+  name: 3Ev4Metjiroh
+  base_url: "http://3ev4metjirohtdpshsqlkrqcmxq6zu3d7obrdhglpy5jpbr7whmlfgqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: 47glxkuxyayq
+  name: 47Glxkuxyayq
+  base_url: "http://47glxkuxyayqrvugfumgsblrdagvrah7gttfscgzn56eyss5wg3uvmqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: 5butbkrljkao
+  name: 5Butbkrljkao
+  base_url: "http://5butbkrljkaorg5maepuca25oma7eiwo6a2rlhvkblb4v6mf3ki2ovid.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: akira
+  name: Akira
+  base_url: "https://akiralkzxzq2dsrzsrvbr2xgbbu2wgsmxryd4csgfameg52n7efvr2id.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: arcus
+  name: Arcus
+  base_url: "http://arcuufpr5xxbbkin4mlidt7itmr6znlppk63jbtkeguuhszmc5g7qdyd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: bashex7mokre
+  name: Bashex7Mokre
+  base_url: "http://bashex7mokreyoxl6wlswxl4foi7okgs7or7aergnuiockuoq35yt3ad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: blacksuit
+  name: Blacksuit
+  base_url: "http://black3gnkizshuynieigw6ejgpblb53mpasftzd6pydqpmq2vn2xf6yd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: blogvl7tjyjv
+  name: Blogvl7Tjyjv
+  base_url: "http://blogvl7tjyjvsfthobttze52w36wwiz34hrfcmorgvdzb6hikucb7aqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: cloak
+  name: Cloak
+  base_url: "http://cloak7jpvcb73rtx2ff7kaw2kholu7bdiivxpzbhlny4ybz75dpxckqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: direwolf
+  name: Direwolf
+  base_url: "http://direwolfcdkv5whaz2spehizdg22jsuf5aeje4asmetpbt6ri4jnd4qd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: embargo
+  name: Embargo
+  base_url: "http://embargobe3n5okxyzqphpmk3moinoap2snz5k6765mvtkk7hhi544jid.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: funksec
+  name: Funksec
+  base_url: "http://funknqn44slwmgwgnewne6bintbooauwkaupik4yrlgtycew3ergraid.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: ijzn3sicrcy7
+  name: Ijzn3Sicrcy7
+  base_url: "http://ijzn3sicrcy7guixkzjkib4ukbiilwc3xhnmby4mcbccnsd7j2rekvqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: inc-ransom
+  name: Inc Ransom
+  base_url: "http://incblog6qu4y4mm4zvw5nrmue6qbwtgjsxpw6b7ixzssu36tsajldoad.onion/blog/disclosure"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: ipi4
+  name: Ipi4
+  base_url: "http://ipi4tiumgzjsym6pyuzrfqrtwskokxokqannmd6sa24shvr7x5kxdvqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: j5o5y2feotmh
+  name: J5O5Y2Feotmh
+  base_url: "http://j5o5y2feotmhvr7cbcp2j2ewayv5mn5zenl3joqwx67gtfchhezjznad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: lockbit
+  name: Lockbit
+  base_url: "http://lockbit3753ekiocyo5epmpy6klmejchjtzddoekjlnt6mu3qh4de2id.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: lockbit-2
+  name: Lockbit 2
+  base_url: "http://lockbit7z3azdoxdpqxzliszutufbc2fldagztdu47xyucp25p4xtqad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: lynx
+  name: Lynx
+  base_url: "http://lynxblogtwatfsrwj3oatpejwxk5bngqcd5f7s26iskagfu7ouaomjad.onion/leak"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: mydata
+  name: Mydata
+  base_url: "http://mydatae2d63il5oaxxangwnid5loq2qmtsol2ozr6vtb7yfm5ypzo6id.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: om6q4a6cyipx
+  name: Om6Q4A6Cyipx
+  base_url: "http://om6q4a6cyipxvt7ioudxt24cw4oqu4yodmqzl25mqd2hgllymrgu4aqd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: ransomhouse
+  name: Ransomhouse
+  base_url: "http://ransomocmou6mnbquqz44ewosbkjk3o5qjsl3orawojexfook2j7esad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: ransomlook-2
+  name: Ransomlook 2
+  base_url: "http://rnsmwareartse3m4hjsumjf222pnka6gad26cqxqmbjvevhbnym5p6ad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: rhysida
+  name: Rhysida
+  base_url: "http://rhysidafc6lm7qa2mkiukbezh7zuth3i4wof4mh2audkymscjm6yegad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: santa
+  name: Santa
+  base_url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: sarcoma
+  name: Sarcoma
+  base_url: "http://sarcomawmawlhov7o5mdhz4eszxxlkyaoiyiy2b5iwxnds2dmb4jakad.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: termite
+  name: Termite
+  base_url: "http://termiteuslbumdge2zmfmfcsrvmvsfe4gvyudc5j6cdnisnhtftvokid.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: unsafe
+  name: Unsafe
+  base_url: "http://unsafeipw6wbkzzmj7yqp7bz6j7ivzynggmwxsm6u2wwfmfqrxqrrhyd.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: z3wqggtxft7i
+  name: Z3Wqggtxft7I
+  base_url: "http://z3wqggtxft7id3ibr7srivv5gjof5fwg76slewnzwwakjuf3nlhukdid.onion/blog"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: zohlm7ahjweg
+  name: Zohlm7Ahjweg
+  base_url: "http://zohlm7ahjwegcedoz7lrdrti7bvpofymcayotp744qhx6gjmxbuo2yid.onion"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+# ---------------------------------------------------------------------------------------
+# The two entries below responded, but NEITHER IS A RANSOMWARE LEAK SITE.
+#
+# Torzon is a marketplace (vendors, products, prices); Tenebris is a discussion forum
+# (threads, posts, karma). This project's schema and extractor are built for ransomware
+# victim disclosure — victim org, actor group, leak size, publication status. Crawling a
+# marketplace or forum with that extractor will produce noise, not intelligence.
+#
+# They are kept here, disabled, as a record that they were checked. Making them useful means
+# a different extractor and probably a different table — not enabling these.
+# ---------------------------------------------------------------------------------------
+
+- slug: torzon
+  name: Torzon Market
+  base_url: "http://torzon4kv5swfazrziqvel2imhxcckc4otcvopiv5lnxzpqu4v4m5iyd.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: tenebris
+  name: Tenebris Forum
+  base_url: "http://tenebrispoyfrcup4k24lciwrh4gc5735hmld4dweq7his7zh423opqd.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 3600
+  request_delay_seconds: 15
+  enabled: false
+

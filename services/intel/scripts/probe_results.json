@@ -1,0 +1,447 @@
+[
+ {
+  "slug": "2c7nd54guzi6",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "33zo6hifw4us",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "3ev4metjiroh",
+  "alive": true,
+  "status": 200,
+  "bytes": 3637
+ },
+ {
+  "slug": "47glxkuxyayq",
+  "alive": true,
+  "status": 200,
+  "bytes": 43437
+ },
+ {
+  "slug": "53d5skw4ypzk",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "5butbkrljkao",
+  "alive": true,
+  "status": 200,
+  "bytes": 265287
+ },
+ {
+  "slug": "6doyqxqqj36v",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "7ukmkdtyxdkd",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "akira",
+  "alive": true,
+  "status": 403,
+  "bytes": 1435
+ },
+ {
+  "slug": "arcus",
+  "alive": true,
+  "status": 200,
+  "bytes": 120157
+ },
+ {
+  "slug": "bashex7mokre",
+  "alive": true,
+  "status": 200,
+  "bytes": 188686
+ },
+ {
+  "slug": "beast",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "bianlian",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "blacksuit",
+  "alive": true,
+  "status": 200,
+  "bytes": 6899
+ },
+ {
+  "slug": "blog-xxu",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "blogvl7tjyjv",
+  "alive": true,
+  "status": 200,
+  "bytes": 639
+ },
+ {
+  "slug": "cactus",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "cicada",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "cloak",
+  "alive": true,
+  "status": 200,
+  "bytes": 1177
+ },
+ {
+  "slug": "d4rk",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "darkvault",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "dataleak",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "dcarryhaih5o",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "direwolf",
+  "alive": true,
+  "status": 200,
+  "bytes": 61644
+ },
+ {
+  "slug": "dkgn45pinr7n",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "doq32rjiuomf",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "ebhmkoohccl4",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "embargo",
+  "alive": true,
+  "status": 200,
+  "bytes": 617
+ },
+ {
+  "slug": "flockcat",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "funksec",
+  "alive": true,
+  "status": 200,
+  "bytes": 4862
+ },
+ {
+  "slug": "g3h3klsev3ei",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "gmixcebhni6c",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "hellcat",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "hgxyonufefcg",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "hunters",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "ijzn3sicrcy7",
+  "alive": true,
+  "status": 200,
+  "bytes": 73314
+ },
+ {
+  "slug": "inc-ransom",
+  "alive": true,
+  "status": 200,
+  "bytes": 448
+ },
+ {
+  "slug": "ipi4",
+  "alive": true,
+  "status": 200,
+  "bytes": 13488
+ },
+ {
+  "slug": "j5o5y2feotmh",
+  "alive": true,
+  "status": 200,
+  "bytes": 2196
+ },
+ {
+  "slug": "jbmk7h6xlked",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "ks5424y3wpr5",
+  "alive": false,
+  "error": "ReadTimeout"
+ },
+ {
+  "slug": "lockbit",
+  "alive": true,
+  "status": 200,
+  "bytes": 819439
+ },
+ {
+  "slug": "lockbit-2",
+  "alive": true,
+  "status": 200,
+  "bytes": 125030
+ },
+ {
+  "slug": "lynx",
+  "alive": true,
+  "status": 200,
+  "bytes": 803
+ },
+ {
+  "slug": "malas",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "mblogci3rude",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "mbrlkbtq5jon",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "mdhby62yvvg6",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "mydata",
+  "alive": true,
+  "status": 200,
+  "bytes": 9658
+ },
+ {
+  "slug": "nerqnacjmdy3",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "nitrogen",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "noname",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "nsalewdnfcls",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "om6q4a6cyipx",
+  "alive": true,
+  "status": 200,
+  "bytes": 29621054
+ },
+ {
+  "slug": "omega",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "onyxcym4mjil",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "orca",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "ransomhouse",
+  "alive": true,
+  "status": 200,
+  "bytes": 34452
+ },
+ {
+  "slug": "ransomlook",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "ransomlook-2",
+  "alive": true,
+  "status": 200,
+  "bytes": 13481
+ },
+ {
+  "slug": "ransomxifxwc",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "raworld",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "rhysida",
+  "alive": true,
+  "status": 200,
+  "bytes": 28792
+ },
+ {
+  "slug": "santa",
+  "alive": true,
+  "status": 200,
+  "bytes": 4517
+ },
+ {
+  "slug": "sarcoma",
+  "alive": true,
+  "status": 200,
+  "bytes": 99819
+ },
+ {
+  "slug": "sinobi",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "stormous",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "termite",
+  "alive": true,
+  "status": 200,
+  "bytes": 454
+ },
+ {
+  "slug": "twni",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "txtggyng5euq",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "unsafe",
+  "alive": true,
+  "status": 200,
+  "bytes": 10209
+ },
+ {
+  "slug": "vlofmq2u3f5a",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "vmjfieomxhnf",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "weg7sdx54bev",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "wtyafjyhwqrg",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "xbkv2qey6u3g",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "xfv4jzckytb4",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "xfycpauc22t5",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "yrz6bayqwhle",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "z3wqggtxft7i",
+  "alive": true,
+  "status": 200,
+  "bytes": 290958
+ },
+ {
+  "slug": "z6wk",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "zfytizegsze6",
+  "alive": false,
+  "error": "ProxyError"
+ },
+ {
+  "slug": "zohlm7ahjweg",
+  "alive": true,
+  "status": 200,
+  "bytes": 620
+ }
+]

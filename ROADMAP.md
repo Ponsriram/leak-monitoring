@@ -3,14 +3,6 @@
 Progress tracker for the rebuild described in the architecture review.
 Update the checkboxes as work lands. **One line per unit of work that can be verified on its own.**
 
-- **Architecture review:** https://claude.ai/code/artifact/4d71ff0b-0cb0-4367-a217-8b8d2ea66cc3
-- **Approach:** the rebuild lives in `apps/`, `packages/`, `services/` and `infra/`.
-  The legacy `client/`, `server/` and `intelligence_engine/` directories were **deleted on
-  2026-08-14** once the replacement was verified. Git history retains them.
-- **Order:** backend → verify → frontend → verify → intel pipeline.
-
----
-
 ## Status at a glance
 
 | Phase | Scope | Status |

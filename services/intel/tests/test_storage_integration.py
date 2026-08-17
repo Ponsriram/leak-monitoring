@@ -59,6 +59,33 @@ async def group(storage: Storage):  # type: ignore[no-untyped-def]
         )
 
 
+@pytest.fixture
+async def source_id(storage: Storage):  # type: ignore[no-untyped-def]
+    """A throwaway source row, cleaned up afterwards.
+
+    This test used to take `list_sources()[0]` and skip when the table was empty. CI's
+    Python job applies migrations but never seeds — only the API job does — so the table
+    was always empty there and the test always skipped. The workflow then has a step that
+    treats *any* skip as proof Postgres was unreachable, which turned a fixture assumption
+    into a hard CI failure that looked like a database outage.
+
+    Owning its fixture makes the test hermetic and makes that guard's assumption true
+    again: from here, a skip really does mean the database was unreachable.
+    """
+    row = await storage._pool.fetchrow(  # noqa: SLF001 - test fixture
+        "insert into sources (slug, name, base_url) values ($1, $1, $2) returning id",
+        f"test-src-{uuid.uuid4().hex[:10]}",
+        "http://fixture.onion/",
+    )
+    try:
+        yield row["id"]
+    finally:
+        # Cascades to raw_pages and crawl_runs, so the page written above goes with it.
+        await storage._pool.execute(  # noqa: SLF001 - test teardown
+            "delete from sources where id = $1", row["id"]
+        )
+
+
 def make_leak(group: str, victim: str = "Northwind Logistics", **kwargs: object) -> ExtractedLeak:
     base: dict[str, object] = {
         "victim_name": victim,
@@ -142,32 +169,20 @@ async def test_unusable_leaks_are_skipped_not_inserted(storage: Storage, group: 
     assert result.skipped == 1
 
 
-async def test_page_content_hash_short_circuits(storage: Storage) -> None:
+async def test_page_content_hash_short_circuits(storage: Storage, source_id: int) -> None:
     """Unchanged pages must report changed=False so extraction is skipped entirely."""
-    sources = await storage.list_sources(only_enabled=False)
-    if not sources:
-        pytest.skip("no sources in the database — run `intel sources sync`")
-
-    source = sources[0]
     text = f"unique page content {uuid.uuid4().hex}"
-    page_id = None
 
-    try:
-        page_id, changed = await storage.save_page(
-            source_id=source.id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
-        )
-        assert changed is True
+    page_id, changed = await storage.save_page(
+        source_id=source_id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
+    )
+    assert changed is True
 
-        same_id, changed_again = await storage.save_page(
-            source_id=source.id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
-        )
-        assert changed_again is False, "identical content must not be reprocessed"
-        assert same_id == page_id
-    finally:
-        if page_id is not None:
-            await storage._pool.execute(  # noqa: SLF001 - test teardown
-                "delete from raw_pages where id = $1", page_id
-            )
+    same_id, changed_again = await storage.save_page(
+        source_id=source_id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
+    )
+    assert changed_again is False, "identical content must not be reprocessed"
+    assert same_id == page_id
 
 
 def test_content_hash_is_stable() -> None:

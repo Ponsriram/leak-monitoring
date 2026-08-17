@@ -32,6 +32,18 @@ jobs:
 
       - run: npm ci
 
+      # `@leak/api` and `@leak/web` import `@leak/db`, whose type declarations are emitted
+      # into `packages/db/dist` — which is gitignored, so a clean checkout has none. That
+      # made the Typecheck step below fail on every commit with:
+      #
+      #     src/routes/stats.ts(1,45): error TS2307: Cannot find module '@leak/db'
+      #
+      # plus a cascade of TS7006 "implicitly has an 'any' type" from the unresolved import.
+      # The API and Python jobs already build this workspace before using it; this job
+      # typechecked against types that had never been generated.
+      - name: Build @leak/db (its emitted types are what the other workspaces typecheck against)
+        run: npm run build -w @leak/db
+
       - name: Typecheck
         run: npm run typecheck
 

@@ -96,6 +96,8 @@ export type Summary = {
   trackedGroups: number;
   activeSources: number;
   alertsTriggered: number;
+  lastCollectionAt: string | null;
+  failingSources: number;
 };
 
 // --- query keys ---

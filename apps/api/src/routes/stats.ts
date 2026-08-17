@@ -115,6 +115,17 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
             trackedGroups: z.number(),
             activeSources: z.number(),
             alertsTriggered: z.number(),
+            /**
+             * When collection last succeeded, and how many sources are currently failing.
+             *
+             * Every other number here counts leaks, which means a working crawler that
+             * finds nothing new looks identical to a crawler that has stopped — and leak
+             * sites publish in bursts, so "nothing new" is the normal state for hours at a
+             * time. These two fields are the ones that actually answer "is it still
+             * running?" without opening a terminal.
+             */
+            lastCollectionAt: z.date().nullable(),
+            failingSources: z.number(),
           }),
         },
       },
@@ -122,7 +133,8 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     async () => {
       const since = (days: number) => new Date(Date.now() - days * 86_400_000);
 
-      const [total, last7, last30, groups, activeSources, triggered] = await Promise.all([
+      const [total, last7, last30, groups, activeSources, triggered, collection] =
+        await Promise.all([
         fastify.db.select({ value: count() }).from(leaks),
         fastify.db
           .select({ value: count() })
@@ -142,7 +154,24 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
         // The old dashboard read this from a collection nothing ever wrote to, so it was
         // permanently zero. Now it counts real deliveries.
         fastify.db.select({ value: count() }).from(alertEvents),
+        // Most recent successful crawl of any enabled source, plus how many are failing.
+        //
+        // `execute` runs raw SQL, which bypasses Drizzle's column decoding — the driver is
+        // configured to hand timestamps back as strings and let Drizzle map them, so a
+        // timestamptz selected this way arrives as a string, not a Date. The count above
+        // gets away with it because `::int` is already a number. Coerced below rather than
+        // loosening the response schema, which would just push the ambiguity to callers.
+        fastify.db.execute<{ last_success: string | Date | null; failing: number }>(
+          sql`select max(last_success_at) as last_success,
+                     count(*) filter (where consecutive_failures >= 3)::int as failing
+                from sources where enabled`,
+        ),
       ]);
+
+      const health = (
+        collection as unknown as { last_success: string | Date | null; failing: number }[]
+      )[0];
+      const lastCollectionAt = health?.last_success ? new Date(health.last_success) : null;
 
       return {
         totalLeaks: total[0]?.value ?? 0,
@@ -151,6 +180,8 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
         trackedGroups: groups[0]?.value ?? 0,
         activeSources: activeSources[0]?.value ?? 0,
         alertsTriggered: triggered[0]?.value ?? 0,
+        lastCollectionAt,
+        failingSources: health?.failing ?? 0,
       };
     },
   );

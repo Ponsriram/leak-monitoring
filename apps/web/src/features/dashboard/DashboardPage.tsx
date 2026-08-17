@@ -18,6 +18,25 @@ const LeaksPerGroupChart = lazy(() =>
 
 const ChartFallback = () => <div className="skeleton chart-box" />;
 
+/** Collection is scheduled hourly, so anything past ~2 hours means runs are being missed. */
+const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+const DEAD_AFTER_MS = 6 * 60 * 60 * 1000;
+
+function collectionLabel(at: string | null | undefined): string {
+  if (!at) return "never";
+  return formatRelative(at);
+}
+
+function collectionTone(
+  at: string | null | undefined,
+): "good" | "warning" | "critical" | undefined {
+  if (!at) return "critical";
+  const age = Date.now() - new Date(at).getTime();
+  if (age > DEAD_AFTER_MS) return "critical";
+  if (age > STALE_AFTER_MS) return "warning";
+  return "good";
+}
+
 export function DashboardPage() {
   const summary = useSummary();
   const perDay = useLeaksPerDay(30);
@@ -66,6 +85,24 @@ export function DashboardPage() {
         <StatTile
           label="Alerts fired"
           value={summary.data?.alertsTriggered}
+          loading={summary.isPending}
+        />
+        {/*
+          The only tile that answers "is collection still running?".
+          Every other tile counts leaks, so a working crawler that finds nothing new is
+          indistinguishable from one that has died — and since these groups publish in
+          bursts, "nothing new" is the normal state for hours at a time. This one advances
+          on every successful crawl whether or not anything was found.
+        */}
+        <StatTile
+          label="Last collection"
+          text={collectionLabel(summary.data?.lastCollectionAt)}
+          note={
+            summary.data?.failingSources
+              ? `${summary.data.failingSources} source(s) failing`
+              : "Runs automatically every hour"
+          }
+          tone={collectionTone(summary.data?.lastCollectionAt)}
           loading={summary.isPending}
         />
       </div>

@@ -55,12 +55,33 @@ echo "== stats (the endpoints that used to return nothing) =="
 check "leaks-per-day returns 30 zero-filled days" 30 "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-day?days=30" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.length')"
 check "leaks-per-day has non-zero totals" "yes" "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-day?days=60" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.some(d=>d.total>0)?"yes":"no"')"
 check "leaks-per-group returns 6 groups" 6 "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-group" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.length')"
+# Checked before the field assertions below. When the response fails its own schema the
+# route returns 500, and every field check then reports "expected 144, got undefined" —
+# which reads like a counting bug rather than the serialization error it actually is.
+check "summary responds 200" 200 "$(status -b "$JAR" $API/api/stats/summary)"
 check "summary.totalLeaks = 144" 144 "$(curl -s -b "$JAR" $API/api/stats/summary | node -pe 'JSON.parse(require("fs").readFileSync(0)).totalLeaks')"
+# lastCollectionAt is a timestamptz pulled through raw SQL, which skips Drizzle's column
+# decoding and arrives as a string; it must still serialize as a date.
+check "summary.lastCollectionAt serializes" "yes" "$(curl -s -b "$JAR" $API/api/stats/summary | node -pe 'const v=JSON.parse(require("fs").readFileSync(0)).lastCollectionAt; (v===null||!isNaN(Date.parse(v)))?"yes":"no"')"
 check "summary.trackedGroups = 6"  6  "$(curl -s -b "$JAR" $API/api/stats/summary | node -pe 'JSON.parse(require("fs").readFileSync(0)).trackedGroups')"
 
 echo "== sources (was 10 hardcoded fake rows) =="
 check "GET /api/sources -> 6" 6 "$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.length')"
-check "health is derived, akira is failing" "failing" "$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.find(s=>s.slug==="akira").health')"
+# akira is seeded with 4 consecutive failures AND enabled=false, so it exercises the
+# precedence rule: a source that is not being crawled reports `disabled`, not `failing`.
+# A paused source has no current health to report — its failure count is history, and
+# showing it as failing would put a permanent red row on the dashboard for a site nobody
+# is crawling.
+#
+# This previously asserted "failing" and had been failing in CI since the seed was changed
+# to ship every demo source disabled ("Demo rows must never be crawl targets" — seed.ts).
+# The seed and the route agree; the assertion was the stale one.
+check "disabled beats failing in health" "disabled" "$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.find(s=>s.slug==="akira").health')"
+# ...and the failure count is still reported, so the disabled state hides nothing.
+# (Every seeded source is disabled by design, so `healthy`/`degraded`/`failing` cannot be
+# exercised here without a fixture that invites the crawler at fake onion addresses. Those
+# branches are covered by the source-health query in the Python storage tests instead.)
+check "failure count survives being disabled" 4 "$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.find(s=>s.slug==="akira").consecutiveFailures')"
 # `every(leakCount > 0)` was the original assertion here and it PASSED while every count was
 # wrong (an uncorrelated subquery returned 1 for every source). Assert the exact total instead:
 # per-source counts must sum to the number of leaks that have a source.

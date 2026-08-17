@@ -35,6 +35,84 @@ def test_links_attributes_to_the_preceding_victim() -> None:
     assert leak.leak_size_bytes == int(1.2 * 1024**4)
 
 
+def test_url_printed_above_its_victim_binds_to_that_victim() -> None:
+    """The layout that silently misfiled every listing on a page.
+
+    Termite prints the victim's link on the line above the company name. Under
+    "attributes attach to the preceding victim", each record took the *next* company's
+    domain — and since `dedupe_hash` is built from `victim_domain`, every victim was filed
+    under another company's identity and domain alerts would have fired for the wrong one.
+    """
+    leaks = link_spans(
+        [
+            span(Label.VICTIM_URL, "affiniahealthcare.org", 0),
+            span(Label.VICTIM, "Affinia Healthcare", 25),
+            span(Label.VICTIM_URL, "jdyoung.com", 50),
+            span(Label.VICTIM, "JD Young", 65),
+            span(Label.VICTIM_URL, "calfresh.ca.gov", 80),
+            span(Label.VICTIM, "Cal Fresh", 100),
+        ],
+        source_group="termite",
+    )
+
+    assert [(leak.victim_name, leak.victim_domain) for leak in leaks] == [
+        ("Affinia Healthcare", "affiniahealthcare.org"),
+        ("JD Young", "jdyoung.com"),
+        ("Cal Fresh", "calfresh.ca.gov"),
+    ]
+
+
+def test_trailing_prose_does_not_drag_a_url_to_the_next_victim() -> None:
+    """The URL still belongs to the name it sits next to, not the one it reads before."""
+    leaks = link_spans(
+        [
+            span(Label.VICTIM, "Northwind Logistics", 0),
+            span(Label.VICTIM_URL, "northwind.example", 25),
+            # A long description, then the next listing.
+            span(Label.VICTIM, "Contoso Manufacturing", 300),
+            span(Label.VICTIM_URL, "contoso.example", 330),
+        ],
+        source_group="lockbit",
+    )
+
+    assert [(leak.victim_name, leak.victim_domain) for leak in leaks] == [
+        ("Northwind Logistics", "northwind.example"),
+        ("Contoso Manufacturing", "contoso.example"),
+    ]
+
+
+def test_a_bare_legal_suffix_is_not_used_as_the_victim_name() -> None:
+    """"Financial" is a table heading, not eight different companies.
+
+    The record survives — its domain identifies the victim — but the misleading label is
+    dropped. Suppressing the record instead would strand the domain on a neighbouring
+    victim, which is the worse of the two errors.
+    """
+    leaks = link_spans(
+        [
+            span(Label.VICTIM, "Financial", 0),
+            span(Label.VICTIM_URL, "stellarrad.com", 20),
+        ],
+        source_group="5butbkrljkao",
+    )
+
+    assert len(leaks) == 1
+    assert leaks[0].victim_name is None
+    assert leaks[0].victim_domain == "stellarrad.com"
+
+
+def test_a_real_name_containing_a_suffix_is_kept() -> None:
+    leaks = link_spans(
+        [
+            span(Label.VICTIM, "Fabrikam Health GmbH", 0),
+            span(Label.VICTIM_URL, "fabrikam.example", 30),
+        ],
+        source_group="lockbit",
+    )
+
+    assert leaks[0].victim_name == "Fabrikam Health GmbH"
+
+
 def test_separates_consecutive_victims() -> None:
     """A new victim span opens a new record; attributes must not bleed across."""
     leaks = link_spans(

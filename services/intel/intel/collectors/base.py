@@ -20,6 +20,10 @@ class Collector(Protocol):
 
     name: str
 
+    # Why the most recent `fetch` returned None. Read by the pipeline so a failed crawl
+    # records the actual reason instead of a generic "could not fetch".
+    last_error: str | None
+
     async def fetch(self, url: str) -> str | None:
         """Return raw HTML, or None if the page could not be fetched."""
         ...

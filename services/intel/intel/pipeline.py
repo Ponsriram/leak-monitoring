@@ -8,17 +8,23 @@ run every cell in order, and hope you didn't run it twice.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 
 import structlog
 
-from .collectors import get_collector, page_url, to_text
+from .collectors import classify_onion_urls, get_collector, onion_host, page_url, to_text
 from .config import Settings
 from .extract import get_extractor, link_spans
 from .models import ExtractedLeak
 from .storage import SourceRow, Storage, UpsertResult
 
 log = structlog.get_logger(__name__)
+
+
+# A page shorter than this carries no listings. It is a challenge page, a JS shell, or an
+# error — all of which used to be indistinguishable from a healthy crawl in the database.
+MIN_PAGE_TEXT_CHARS = 50
 
 
 @dataclass(slots=True)
@@ -30,6 +36,8 @@ class SourceResult:
     bytes_fetched: int = 0
     leaks: UpsertResult = field(default_factory=UpsertResult)
     error: str | None = None
+    mirrors_found: int = 0
+    switched_to: str | None = None
 
 
 @dataclass(slots=True)
@@ -47,6 +55,10 @@ class RunResult:
     @property
     def failed(self) -> list[str]:
         return [s.slug for s in self.sources if s.status == "failed"]
+
+    @property
+    def new_leak_ids(self) -> list[int]:
+        return [id_ for source in self.sources for id_ in source.leaks.new_leak_ids]
 
 
 async def crawl_source(
@@ -70,30 +82,74 @@ async def crawl_source(
         socks_ports=settings.tor_socks_ports,
         timeout=settings.request_timeout_seconds,
         max_retries=settings.max_retries,
+        backoff_seconds=settings.retry_backoff_seconds,
+        backoff_cap_seconds=settings.retry_backoff_cap_seconds,
     )
     extractor = get_extractor(extractor_name or settings.extractor)
 
+    # The address this crawl actually uses. Starts at the source's configured (or
+    # previously failed-over) address and may move to a mirror below.
+    crawl_base = source.crawl_url
+    known_hosts = await storage.known_onion_hosts() if settings.discover_mirrors else set()
+
     try:
         for page_no in range(1, source.max_pages + 1):
-            url = page_url(source.base_url, page_no, source.pagination_style)
+            url = page_url(crawl_base, page_no, source.pagination_style)
             if url is None:
                 break
 
             html = await collector.fetch(url)
+
+            if html is None and page_no == 1:
+                # The primary address is unreachable. Before recording a failure, try the
+                # addresses this site has published about itself — that is the whole point
+                # of collecting them.
+                html, moved_to = await _try_mirrors(
+                    source, storage=storage, collector=collector, settings=settings
+                )
+                if moved_to is not None:
+                    crawl_base = moved_to
+                    result.switched_to = moved_to
+                    url = moved_to
+
             if html is None:
                 # A missing page N>1 just means the listing ended.
                 if page_no == 1:
                     result.status = "failed"
-                    result.error = f"could not fetch {url}"
+                    reason = getattr(collector, "last_error", None)
+                    result.error = (
+                        f"could not fetch {url}: {reason}" if reason
+                        else f"could not fetch {url}"
+                    )
                 break
 
-            text = to_text(html)
-            if len(text.strip()) < 50:
-                log.info("page empty, stopping", source=source.slug, page=page_no)
-                break
-
+            # Counted here, before the content checks below. These two lines used to sit
+            # after the empty-page check, so a source that returned a challenge page — a
+            # real fetch, just not a listing — was recorded as a successful crawl of zero
+            # pages, which reset its failure counter and made a blocked site look healthy.
             result.pages_fetched += 1
             result.bytes_fetched += len(html.encode("utf-8"))
+
+            text = to_text(html)
+
+            if settings.discover_mirrors:
+                result.mirrors_found += await _record_mirrors(
+                    text, source=source, storage=storage, url=url, known_hosts=known_hosts
+                )
+
+            if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
+                if page_no == 1:
+                    # Reached, returned something, but nothing to read. Almost always a JS
+                    # challenge or an interstitial, and worth failing loudly: the source
+                    # needs `collector: browser` or a new address, and silence here is how
+                    # akira sat at "succeeded" for days while collecting nothing.
+                    result.status = "failed"
+                    result.error = (
+                        f"page 1 returned {len(text.strip())} chars of text — challenge page "
+                        f"or JS-rendered listing (try collector: browser)"
+                    )
+                log.info("page empty, stopping", source=source.slug, page=page_no)
+                break
 
             page_id, changed = await storage.save_page(
                 source_id=source.id,
@@ -124,6 +180,7 @@ async def crawl_source(
             result.leaks.inserted += upserted.inserted
             result.leaks.updated += upserted.updated
             result.leaks.skipped += upserted.skipped
+            result.leaks.new_leak_ids.extend(upserted.new_leak_ids)
 
             await storage.mark_extracted(page_id)
 
@@ -141,23 +198,133 @@ async def crawl_source(
             if page_no < source.max_pages:
                 await asyncio.sleep(source.request_delay_seconds)
 
+    except asyncio.CancelledError:
+        # Cancellation is NOT an Exception subclass, so it used to fall straight through to
+        # the `finally` below with `result.status` still at its default "succeeded". Every
+        # source in flight when the worker's job timeout fired was therefore written to the
+        # database as a successful crawl of zero pages — which reset `consecutive_failures`
+        # and set `last_success_at`, so sources that had never been fetched showed as
+        # healthy. Record the truth, then re-raise: cancellation must stay cancellation.
+        result.status = "failed"
+        result.error = "crawl cancelled (worker shutdown or job timeout)"
+        log.warning("source crawl cancelled", source=source.slug)
+        raise
     except Exception as exc:  # noqa: BLE001 - deliberate: record and continue
         log.exception("source crawl failed", source=source.slug)
         result.status = "failed"
         result.error = str(exc)[:1000]
     finally:
-        await collector.aclose()
-        await storage.finish_crawl(
-            run_id,
-            source.id,
-            status=result.status,
-            pages_fetched=result.pages_fetched,
-            pages_changed=result.pages_changed,
-            bytes_fetched=result.bytes_fetched,
-            error=result.error,
+        with contextlib.suppress(Exception):
+            await collector.aclose()
+        # Shielded so that a cancellation arriving mid-cleanup cannot abandon the crawl_runs
+        # row in 'running' forever. The write still completes; only our wait for it can be
+        # interrupted.
+        await asyncio.shield(
+            storage.finish_crawl(
+                run_id,
+                source.id,
+                status=result.status,
+                pages_fetched=result.pages_fetched,
+                pages_changed=result.pages_changed,
+                bytes_fetched=result.bytes_fetched,
+                error=result.error,
+            )
         )
 
     return result
+
+
+async def _record_mirrors(
+    text: str,
+    *,
+    source: SourceRow,
+    storage: Storage,
+    url: str,
+    known_hosts: set[str],
+) -> int:
+    """Note every onion address on a page that isn't one we already track.
+
+    Addresses the page presents as this site's own — "our mirror", "we have moved to" — are
+    recorded as `self_declared` and are the only discovered addresses failover will consider.
+    Everything else on the page is recorded as a plain `candidate`: still intelligence, but
+    nothing acts on it without an operator saying so.
+    """
+    this_host = onion_host(url)
+    announced, other = classify_onion_urls(
+        text, exclude_hosts=known_hosts | {this_host or ""}
+    )
+    if not announced and not other:
+        return 0
+
+    # Recorded so the next page in this run doesn't re-report the same addresses.
+    known_hosts.update(announced)
+    known_hosts.update(other)
+
+    new = 0
+    new += await storage.record_mirrors(
+        source.id, announced, discovered_from=url, status="self_declared"
+    )
+    new += await storage.record_mirrors(
+        source.id, other, discovered_from=url, status="candidate"
+    )
+
+    if new:
+        log.info(
+            "new onion addresses seen",
+            source=source.slug,
+            new=new,
+            announced=list(announced)[:5],
+        )
+    return new
+
+
+async def _try_mirrors(
+    source: SourceRow,
+    *,
+    storage: Storage,
+    collector: object,
+    settings: Settings,
+) -> tuple[str | None, str | None]:
+    """Try this source's known-good alternative addresses. Returns (html, url that worked).
+
+    Only `approved` and `self_declared` addresses are tried, and only when
+    `CRAWL_MIRROR_FAILOVER` is on. The restriction is the point: these addresses come from
+    text served by the site being crawled, so following an arbitrary one would let a crawled
+    host redirect the crawler anywhere it liked. A `self_declared` address at least came
+    from the site it claims to replace, and every switch is logged and written to
+    `sources.active_url` where an operator can see and undo it.
+    """
+    if not settings.mirror_failover:
+        return None, None
+
+    mirrors = await storage.failover_mirrors(source.id)
+    if not mirrors:
+        return None, None
+
+    for mirror in mirrors:
+        log.info(
+            "primary address failed, trying mirror",
+            source=source.slug,
+            mirror=mirror.onion_host,
+            trust=mirror.status,
+        )
+        html = await collector.fetch(mirror.url)  # type: ignore[attr-defined]
+        if html is None:
+            continue
+        if len(to_text(html).strip()) < MIN_PAGE_TEXT_CHARS:
+            continue
+
+        await storage.promote_mirror(source.id, mirror.url)
+        log.warning(
+            "source switched to a mirror",
+            source=source.slug,
+            was=source.crawl_url,
+            now=mirror.url,
+            trust=mirror.status,
+        )
+        return html, mirror.url
+
+    return None, None
 
 
 def extract_page(
@@ -210,11 +377,46 @@ async def run_pipeline(
     results = await asyncio.gather(*(guarded(source) for source in sources))
 
     run = RunResult(sources=list(results))
+
+    # Alert matching, driven by the ids that were actually inserted. `match_alerts` existed
+    # as an arq task from the start but nothing ever enqueued it, so no alert had ever
+    # fired; running it here means every path that can create a leak also evaluates it.
+    if run.new_leak_ids:
+        events = await storage.match_alerts(run.new_leak_ids)
+        if events:
+            log.info("alert events created", events=events, new_leaks=len(run.new_leak_ids))
+
     log.info(
         "run complete",
         sources=len(run.sources),
         new_leaks=run.inserted,
         seen_again=run.updated,
         failed=run.failed,
+        switched=[s.slug for s in run.sources if s.switched_to],
     )
     return run
+
+
+async def run_pipeline_locked(
+    *,
+    storage: Storage,
+    settings: Settings,
+    slugs: list[str] | None = None,
+    extractor_name: str | None = None,
+) -> RunResult | None:
+    """`run_pipeline`, but only if no other crawl is in flight. None means "skipped".
+
+    Every entry point goes through this. Two crawls sharing one Tor daemon contend for
+    circuits and both get slower — a scheduled run and a manual one overlapping is exactly
+    how a set of sources ends up failing with "TTL expired" that succeed fine on their own.
+    """
+    async with storage.crawl_lock() as acquired:
+        if not acquired:
+            log.warning("another crawl is already running, skipping this one")
+            return None
+        return await run_pipeline(
+            storage=storage,
+            settings=settings,
+            slugs=slugs,
+            extractor_name=extractor_name,
+        )

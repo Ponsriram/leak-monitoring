@@ -12,11 +12,23 @@ import {
 } from "drizzle-orm/pg-core";
 import { sources } from "./sources.js";
 
+/**
+ * The state of a victim's listing on the leak site.
+ *
+ * `negotiating` was split out of `removed`: the extractor used to map "paid" and
+ * "negotiations ongoing" onto `removed`, which said the opposite of what the page meant —
+ * a listing under negotiation is still up, and is the most actionable state there is.
+ *
+ * None of these mean "we checked and the listing is gone". `unknown` means the page printed
+ * no status wording at all, which is the common case; whether a listing is still up is
+ * answered by `lastSeenAt`, not by this column.
+ */
 export const leakStatus = pgEnum("leak_status", [
   "published",
   "countdown",
   "sold",
   "removed",
+  "negotiating",
   "unknown",
 ]);
 

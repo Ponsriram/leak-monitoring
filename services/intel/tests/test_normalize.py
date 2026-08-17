@@ -15,6 +15,7 @@ from intel.extract.normalize import (
     parse_date,
     parse_size,
     parse_status,
+    resolve_status,
 )
 
 
@@ -92,10 +93,45 @@ def test_missing_size_is_none_not_zero(raw: str | None) -> None:
         ("", "unknown"),
         (None, "unknown"),
         ("some unrelated text", "unknown"),
+        # Split out of `removed`, which said the opposite of what these pages mean: a
+        # listing under negotiation has not been taken down, it is the live one.
+        ("Negotiations ongoing", "negotiating"),
+        ("in talks with the company", "negotiating"),
+        ("ransom paid", "negotiating"),
     ],
 )
 def test_parses_status(raw: str | None, expected: str) -> None:
     assert parse_status(raw) == expected
+
+
+def test_status_field_outranks_a_passing_mention() -> None:
+    """An explicit status field beats a word used in the description.
+
+    The old resolver returned whichever pattern was listed first, so `sold` — checked
+    before `published` — won on a listing whose description merely said "purchased" and
+    whose own status line said published.
+    """
+    assert (
+        resolve_status(["Status: published", "the buyer found the data useful"]) == "published"
+    )
+
+
+def test_repeated_wording_outweighs_a_single_banner_word() -> None:
+    """'LEAKED' across the top of every page is the weakest evidence there is."""
+    assert resolve_status(["LEAKED", "sold", "sold to a private buyer"]) == "sold"
+
+
+def test_a_lone_banner_word_still_counts_when_it_is_all_there_is() -> None:
+    assert resolve_status(["LEAKED DATA"]) == "published"
+
+
+def test_ties_break_towards_the_more_specific_event() -> None:
+    """Publication is the default outcome; a sale is the specific thing that happened."""
+    assert resolve_status(["published", "sold"]) == "sold"
+
+
+def test_no_status_wording_is_unknown_not_a_guess() -> None:
+    assert resolve_status([None, "", "Industrial equipment manufacturer."]) == "unknown"
 
 
 @pytest.mark.parametrize(

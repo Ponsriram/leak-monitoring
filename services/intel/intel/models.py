@@ -22,6 +22,7 @@ class LeakStatus(StrEnum):
     COUNTDOWN = "countdown"
     SOLD = "sold"
     REMOVED = "removed"
+    NEGOTIATING = "negotiating"
     UNKNOWN = "unknown"
 
 

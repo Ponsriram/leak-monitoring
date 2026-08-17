@@ -31,9 +31,14 @@ _DATE_PATTERNS = (
 
 _SIZE_PATTERN = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:[kmgtp]i?b)\b", re.I)
 
+# Deliberately wider than the set of phrases `normalize.resolve_status` weighs: this pattern
+# only decides what text is worth capturing as a status span, and the weighing happens later.
+# An explicit "Status: x" field is matched as one span so the field form keeps its weight.
 _STATUS_PATTERN = re.compile(
-    r"\b(published|leaked|disclosed|released|sold|countdown|deadline|"
-    r"time\s+left|days?\s+left|expires?\s+in|removed|deleted|paid)\b",
+    r"\b(status\s*[:\-]\s*\w+|published|leaked|leak|disclosed|released|full\s+dump|"
+    r"sold|purchased|buyer\s+found|countdown|deadline|time\s+left|days?\s+left|"
+    r"expires?\s+in|removed|deleted|taken\s+down|withdrawn|negotiat\w*|"
+    r"in\s+talks|payment\s+pending|paid)\b",
     re.I,
 )
 

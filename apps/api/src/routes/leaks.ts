@@ -13,7 +13,9 @@ const listQuery = z.object({
 
   /** Filter by ransomware group slug. */
   group: z.string().min(1).max(100).optional(),
-  status: z.enum(["published", "countdown", "sold", "removed", "unknown"]).optional(),
+  status: z
+    .enum(["published", "countdown", "sold", "removed", "negotiating", "unknown"])
+    .optional(),
   sourceId: z.coerce.number().int().positive().optional(),
 
   /** Free-text search over victim name and domain, served by the GIN index. */

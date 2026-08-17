@@ -14,8 +14,9 @@ import typer
 import yaml
 
 from .config import get_settings
+from .extract.linker import _NAME_FRAGMENTS  # noqa: PLC2701 - shared list, single source
 from .logging import configure_logging
-from .pipeline import extract_page, run_pipeline
+from .pipeline import extract_page, run_pipeline_locked
 from .storage import Storage
 
 app = typer.Typer(
@@ -24,6 +25,8 @@ app = typer.Typer(
 )
 sources_app = typer.Typer(help="Manage monitored sources.")
 app.add_typer(sources_app, name="sources")
+mirrors_app = typer.Typer(help="Onion addresses discovered on crawled pages.")
+app.add_typer(mirrors_app, name="mirrors")
 
 log = structlog.get_logger(__name__)
 
@@ -156,6 +159,104 @@ def sources_disable(slug: str = typer.Argument(..., help="Source slug")) -> None
     typer.echo(f"Disabled {count} source(s).")
 
 
+# ---------------------------------------------------------------- mirrors
+
+
+@mirrors_app.command("list")
+def mirrors_list(
+    slug: str | None = typer.Argument(None, help="Limit to one source"),
+) -> None:
+    """Onion addresses seen on crawled pages.
+
+    These are recorded, not followed. A leak site announcing "our new address is X" is
+    text written by the site being crawled, so promoting one is a decision you make, not
+    something the crawler does because a page said so.
+    """
+    _setup()
+
+    async def work(storage: Storage, _: object) -> list:  # type: ignore[type-arg]
+        return await storage.list_mirrors(slug)
+
+    rows = asyncio.run(_with_storage(work))
+    if not rows:
+        typer.echo("No mirror addresses recorded yet.")
+        return
+
+    typer.echo(f"{'SOURCE':<16} {'STATUS':<14} {'SEEN':<6} ADDRESS")
+    for row in rows:
+        typer.echo(
+            f"{row['slug']:<16} {row['status']:<14} {row['times_seen']:<6} {row['onion_host']}"
+        )
+
+
+@mirrors_app.command("approve")
+def mirrors_approve(
+    slug: str = typer.Argument(..., help="Source slug"),
+    onion_host: str = typer.Argument(..., help="The .onion host to approve"),
+) -> None:
+    """Mark an address as trusted, so failover will prefer it."""
+    _setup()
+
+    async def work(storage: Storage, _: object) -> int:
+        return await storage.set_mirror_status(slug, onion_host.lower(), "approved")
+
+    count = asyncio.run(_with_storage(work))
+    typer.echo(f"Approved {count} address(es) for {slug}.")
+
+
+@mirrors_app.command("reject")
+def mirrors_reject(
+    slug: str = typer.Argument(..., help="Source slug"),
+    onion_host: str = typer.Argument(..., help="The .onion host to reject"),
+) -> None:
+    """Mark an address as untrusted. Rejection sticks, however often the address reappears."""
+    _setup()
+
+    async def work(storage: Storage, _: object) -> int:
+        return await storage.set_mirror_status(slug, onion_host.lower(), "rejected")
+
+    count = asyncio.run(_with_storage(work))
+    typer.echo(f"Rejected {count} address(es) for {slug}.")
+
+
+@mirrors_app.command("use")
+def mirrors_use(
+    slug: str = typer.Argument(..., help="Source slug"),
+    url: str = typer.Argument(..., help="Full URL to crawl this source at from now on"),
+) -> None:
+    """Point a source at a different address.
+
+    Written to `sources.active_url`, so `intel sources sync` will not undo it — unlike
+    editing `base_url`, which the file overwrites on every sync.
+    """
+    _setup()
+
+    async def work(storage: Storage, _: object) -> bool:
+        source = await storage.get_source(slug)
+        if source is None:
+            return False
+        await storage.promote_mirror(source.id, url)
+        return True
+
+    ok = asyncio.run(_with_storage(work))
+    if not ok:
+        typer.echo(f"No source {slug!r}.", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{slug} will now be crawled at {url}")
+
+
+@mirrors_app.command("reset")
+def mirrors_reset(slug: str = typer.Argument(..., help="Source slug")) -> None:
+    """Go back to the address in sources.yaml."""
+    _setup()
+
+    async def work(storage: Storage, _: object) -> int:
+        return await storage.clear_active_url(slug)
+
+    count = asyncio.run(_with_storage(work))
+    typer.echo(f"Reset {count} source(s) to their configured address.")
+
+
 # ---------------------------------------------------------------- run
 
 
@@ -170,11 +271,15 @@ def run(
 
     Safe to re-run: unchanged pages are skipped by content hash, and leaks upsert on
     dedupe_hash rather than inserting duplicates.
+
+    Refuses to start while another crawl is in flight — including the worker's hourly
+    scheduled run. Two crawls through one Tor daemon compete for circuits and both get
+    slower, which shows up as sources failing with "TTL expired" that work fine alone.
     """
     _setup()
 
     async def work(storage: Storage, settings: object):  # type: ignore[no-untyped-def]
-        return await run_pipeline(
+        return await run_pipeline_locked(
             storage=storage,
             settings=settings,  # type: ignore[arg-type]
             slugs=list(source) if source else None,
@@ -182,10 +287,25 @@ def run(
         )
 
     result = asyncio.run(_with_storage(work))
+
+    if result is None:
+        typer.echo(
+            "Another crawl is already running (the worker's hourly run, or a second "
+            "`intel run`). Nothing was crawled.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     typer.echo(
         f"Done. {result.inserted} new leaks, {result.updated} seen again, "
         f"{len(result.failed)} source(s) failed."
     )
+    switched = [s for s in result.sources if s.switched_to]
+    for source_result in switched:
+        typer.echo(f"Switched {source_result.slug} to mirror {source_result.switched_to}")
+    discovered = sum(s.mirrors_found for s in result.sources)
+    if discovered:
+        typer.echo(f"{discovered} new onion address(es) recorded. See `intel mirrors list`.")
     if result.failed:
         typer.echo(f"Failed: {', '.join(result.failed)}", err=True)
 
@@ -231,12 +351,94 @@ def extract_file(
 
     async def work(storage: Storage, _: object):  # type: ignore[no-untyped-def]
         row = await storage.get_source(group)
-        return await storage.upsert_leaks(leaks, source_id=row.id if row else None)
+        upserted = await storage.upsert_leaks(leaks, source_id=row.id if row else None)
+        # Any path that creates leaks evaluates alerts, or a leak loaded this way would be
+        # the one thing a watching alert silently misses.
+        events = await storage.match_alerts(upserted.new_leak_ids)
+        return upserted, events
 
-    result = asyncio.run(_with_storage(work))
+    result, events = asyncio.run(_with_storage(work))
     typer.echo(
         f"Loaded: {result.inserted} new, {result.updated} updated, {result.skipped} skipped."
     )
+    if events:
+        typer.echo(f"{events} alert event(s) created.")
+
+
+@app.command("repair-domains")
+def repair_domains(
+    apply: bool = typer.Option(
+        False, "--apply", help="Actually write the corrections (default is a dry run)"
+    ),
+) -> None:
+    """Re-key leaks whose victim_domain came from the listing next to theirs.
+
+    Sites that print the victim's link *above* the company name — termite, lockbit and
+    eight others — used to have every listing on the page take the following listing's
+    domain. `victim_domain` is half of `dedupe_hash`, so those rows are filed under another
+    company's identity, and a domain alert would fire for the wrong company.
+
+    The fix runs over `raw_pages`, which still holds the text of everything fetched, so
+    history can be corrected without waiting for a re-crawl. Rows are corrected in place —
+    `first_seen_at` is preserved, because "what is new since yesterday" is the one thing
+    that cannot be reconstructed later.
+
+    Dry run by default. Re-running after an apply is safe and reports nothing to do.
+    """
+    _setup()
+
+    async def work(storage: Storage, _: object) -> dict[str, int]:
+        tally = {"repaired": 0, "merged": 0, "missing": 0}
+
+        for source_id, slug, text in await storage.latest_pages():
+            del source_id
+            for leak in extract_page(
+                text, source_group=slug, source_url=None, page_no=1, extractor_name="rules"
+            ):
+                if not leak.victim_domain or not leak.victim_name:
+                    continue
+
+                if not apply:
+                    exists = await storage._pool.fetchval(  # noqa: SLF001 - read-only probe
+                        "select 1 from leaks where dedupe_hash = $1", leak.dedupe_hash
+                    )
+                    if not exists:
+                        tally["repaired"] += 1
+                    continue
+
+                outcome = await storage.repair_victim_domain(
+                    actor_group=leak.actor_group,
+                    victim_name=leak.victim_name,
+                    victim_domain=leak.victim_domain,
+                    new_hash=leak.dedupe_hash,
+                )
+                tally[outcome] += 1
+
+        if apply:
+            # Same generation of extraction bug, same repair: rows labelled with a name
+            # fragment ("Ltd", "Financial") that a re-crawl cannot clear on its own.
+            tally["unnamed"] = await storage.clear_fragment_victim_names(
+                sorted(_NAME_FRAGMENTS)
+            )
+
+        return tally
+
+    tally = asyncio.run(_with_storage(work))
+
+    if not apply:
+        typer.echo(f"Dry run: {tally['repaired']} listing(s) would be re-keyed.")
+        typer.echo("Pass --apply to write the corrections.")
+        return
+
+    typer.echo(
+        f"Repaired {tally['repaired']}, merged {tally['merged']} duplicate(s), "
+        f"{tally['missing']} already correct or not stored."
+    )
+    if tally.get("unnamed"):
+        typer.echo(
+            f"Cleared {tally['unnamed']} victim name(s) that were only a name fragment; "
+            f"those rows are now identified by their domain."
+        )
 
 
 @app.command("status")

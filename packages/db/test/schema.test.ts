@@ -95,7 +95,10 @@ describe("migration", () => {
     );
     assert.deepEqual(
       result.rows.map((r) => r.enumlabel),
-      ["published", "countdown", "sold", "removed", "unknown"],
+      // `negotiating` was split out of `removed` in migration 0002: a listing under
+      // negotiation has NOT been taken down — it is the live one — so folding the two
+      // together said the opposite of what those pages mean.
+      ["published", "countdown", "sold", "removed", "negotiating", "unknown"],
     );
   });
 });

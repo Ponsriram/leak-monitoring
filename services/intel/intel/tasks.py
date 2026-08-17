@@ -20,7 +20,7 @@ from arq.connections import RedisSettings
 
 from .config import get_settings
 from .logging import configure_logging
-from .pipeline import crawl_source, run_pipeline
+from .pipeline import crawl_source, run_pipeline_locked
 from .storage import Storage
 
 log = structlog.get_logger(__name__)
@@ -40,9 +40,15 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     log.info("worker stopped")
 
 
-async def crawl_all(ctx: dict[str, Any]) -> dict[str, int]:
-    """Crawl every enabled source. Bounded by settings.concurrency."""
-    result = await run_pipeline(storage=ctx["storage"], settings=ctx["settings"])
+async def crawl_all(ctx: dict[str, Any]) -> dict[str, int | str]:
+    """Crawl every enabled source. Bounded by settings.concurrency.
+
+    Takes the crawl lock, so a scheduled run that overlaps a manual `intel run` steps aside
+    instead of competing with it for Tor circuits.
+    """
+    result = await run_pipeline_locked(storage=ctx["storage"], settings=ctx["settings"])
+    if result is None:
+        return {"skipped": "another crawl is already running"}
     return {
         "sources": len(result.sources),
         "new": result.inserted,
@@ -59,11 +65,16 @@ async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
         return {"error": f"no source {slug!r}"}
 
     result = await crawl_source(source, storage=storage, settings=ctx["settings"])
+
+    # One source is still a source of new leaks, so it evaluates alerts like a full run.
+    events = await storage.match_alerts(result.leaks.new_leak_ids)
+
     return {
         "slug": result.slug,
         "status": result.status,
         "new": result.leaks.inserted,
         "seen_again": result.leaks.updated,
+        "alert_events": events,
     }
 
 
@@ -71,56 +82,16 @@ async def match_alerts(ctx: dict[str, Any], leak_ids: list[int]) -> dict[str, in
     """Match new leaks against alert rules and record deliveries.
 
     Only the leaks passed in are considered — this is the inversion of the old five-second
-    full-collection scan.
-
-    Matching is expressed as SQL over typed matchers, never a regex built from user input:
-    an alert's `match_kind` is one of four fixed behaviours, so there is no pattern for a
-    user to make pathological.
-
-    Writing to `alert_events` is idempotent by construction — UNIQUE (alert_id, leak_id)
-    means a retry or a duplicate message cannot produce a second notification.
+    full-collection scan. The matching itself lives in `Storage.match_alerts` so the CLI and
+    the crawl pipeline run the same matcher rather than a second copy of the SQL.
     """
-    if not leak_ids:
-        return {"matched": 0}
-
     storage: Storage = ctx["storage"]
-    matched = await storage._pool.fetchval(  # noqa: SLF001 - repository method pending
-        """
-        with candidates as (
-            select a.id as alert_id, l.id as leak_id, a.channel, a.target,
-                   case
-                       when a.match_kind = 'actor_group' then 'actor_group'
-                       when a.match_kind = 'domain' then 'victim_domain'
-                       else 'victim_name'
-                   end as matched_on
-              from alerts a
-              join leaks l on l.id = any($1::bigint[])
-             where a.enabled
-               and case a.match_kind
-                     when 'exact'       then lower(coalesce(l.victim_name, '')) = a.match_value
-                     when 'domain'      then lower(coalesce(l.victim_domain, '')) = a.match_value
-                                             or lower(coalesce(l.victim_domain, ''))
-                                                like '%.' || a.match_value
-                     when 'substring'   then position(a.match_value in
-                                                lower(coalesce(l.victim_name, '') || ' ' ||
-                                                      coalesce(l.victim_domain, ''))) > 0
-                     when 'actor_group' then l.actor_group = a.match_value
-                   end
-        ),
-        inserted as (
-            insert into alert_events (alert_id, leak_id, matched_on, channel, target, status)
-            select alert_id, leak_id, matched_on, channel, target, 'pending'
-              from candidates
-            on conflict (alert_id, leak_id) do nothing
-            returning 1
-        )
-        select count(*) from inserted
-        """,
-        leak_ids,
-    )
-
+    matched = await storage.match_alerts(leak_ids)
     log.info("alert matching complete", leaks=len(leak_ids), new_events=matched)
-    return {"matched": int(matched or 0)}
+    return {"matched": matched}
+
+
+_settings = get_settings()
 
 
 class WorkerSettings:
@@ -134,13 +105,31 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
 
+    # arq's default is 300 seconds. A full crawl of 32 sources takes ~15 minutes, so every
+    # scheduled run was cancelled at exactly 299.99s and recorded as a failure — the reason
+    # collection only ever worked when someone ran the CLI by hand.
+    job_timeout = _settings.job_timeout_seconds
+
+    # A crawl that timed out will time out again on a retry, an hour of Tor traffic per
+    # attempt. The next scheduled run is the retry.
+    max_tries = 1
+
     cron_jobs = [  # noqa: RUF012
         # Hourly, at a minute that isn't :00 — nothing else on the box is doing anything
         # interesting at :17, and it avoids the thundering herd of every cron on the hour.
-        cron(crawl_all, minute=17),
+        #
+        # `timeout` is set on the cron job as well as on the worker: arq applies the job's
+        # own timeout when it has one, and leaving it unset here would silently reinstate
+        # the 300s default for exactly the job that needs an hour.
+        cron(
+            crawl_all,
+            minute=17,
+            timeout=_settings.job_timeout_seconds,
+            max_tries=1,
+        ),
     ]
 
     # A plain class attribute, not a method: arq reads `redis_settings` directly and expects
     # a RedisSettings instance. As a @staticmethod it handed arq the function object, which
     # failed with "'staticmethod' object has no attribute 'host'" at worker startup.
-    redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+    redis_settings = RedisSettings.from_dsn(_settings.redis_url)

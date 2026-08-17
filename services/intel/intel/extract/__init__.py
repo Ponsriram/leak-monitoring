@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .base import DEFAULT_LABELS, Extractor
 from .linker import Label, Span, link_spans
-from .normalize import extract_domain, parse_date, parse_size, parse_status
+from .normalize import extract_domain, parse_date, parse_size, parse_status, resolve_status
 from .rules import RulesExtractor
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "parse_date",
     "parse_size",
     "parse_status",
+    "resolve_status",
 ]
 
 

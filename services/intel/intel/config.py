@@ -52,10 +52,30 @@ class Settings(BaseSettings):
 
     # --- crawl politeness ---
     request_timeout_seconds: int = Field(default=60, alias="CRAWL_TIMEOUT")
-    max_retries: int = Field(default=3, alias="CRAWL_RETRIES")
+    max_retries: int = Field(default=4, alias="CRAWL_RETRIES")
+    # First retry delay, doubling up to the cap. The old backoff was 2s/4s/8s, which is far
+    # shorter than a Tor rendezvous circuit takes to rebuild — so every retry reused a path
+    # that had just failed and the crawler gave up on sites that were merely slow.
+    retry_backoff_seconds: int = Field(default=15, alias="CRAWL_RETRY_BACKOFF")
+    retry_backoff_cap_seconds: int = Field(default=120, alias="CRAWL_RETRY_BACKOFF_CAP")
     # How many sources to crawl at once. The old crawler was strictly sequential, so 83
     # sources at ~20s per page took many hours per cycle.
     concurrency: int = Field(default=4, alias="CRAWL_CONCURRENCY")
+
+    # How long a full scheduled run may take. The default was arq's 300s, which is far less
+    # than the ~15 minutes 32 sources need, so every scheduled crawl was killed mid-run and
+    # the system only ever collected anything when someone ran the CLI by hand.
+    job_timeout_seconds: int = Field(default=3600, alias="CRAWL_JOB_TIMEOUT")
+
+    # --- mirror discovery ---
+    # Record onion addresses mentioned on crawled pages. Recording is always safe; it is
+    # only ever data until something acts on it.
+    discover_mirrors: bool = Field(default=True, alias="CRAWL_DISCOVER_MIRRORS")
+    # Fall back to a discovered address when a source's primary one is dead. Off by default:
+    # these addresses come from pages served by the sites being crawled, so switching to one
+    # automatically lets a crawled host choose where the crawler connects. Turn it on when
+    # you want unattended continuity and have accepted that trade.
+    mirror_failover: bool = Field(default=False, alias="CRAWL_MIRROR_FAILOVER")
 
     extractor: str = Field(default="rules", alias="INTEL_EXTRACTOR")
 

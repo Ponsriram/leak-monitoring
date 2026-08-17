@@ -11,6 +11,7 @@ returns None and the raw text is kept alongside for audit.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 # Order matters: the most specific formats first. %d/%m before %m/%d is a deliberate choice —
@@ -114,25 +115,88 @@ def parse_size(raw: str | None) -> int | None:
     return int(value * multiplier)
 
 
-_STATUS_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(sold|purchased|buyer\s+found)\b", re.I), "sold"),
-    (re.compile(r"\b(published|leaked|disclosed|full\s+dump|released)\b", re.I), "published"),
+# Status wording, weighted by how much it actually tells you.
+#
+# The previous version was an ordered tuple where the first pattern to match won outright.
+# Two things made that wrong in practice:
+#
+#   * Order became precedence by accident. `sold` was checked first, so a listing whose
+#     description merely used the word "purchased" outranked its own explicit
+#     "Status: published" line.
+#   * A banner word counted as much as a status field. Leak sites print "LEAKED DATA" across
+#     the top of every page, so the single word "leaked" — the weakest possible evidence —
+#     could decide the status of the first listing on the page.
+#
+# So each phrase now carries a weight, every phrase found is counted, and the status with the
+# most evidence wins. Weight 3 is an unambiguous declaration, 2 is standard listing wording,
+# 1 is a word that also appears in page furniture.
+_STATUS_SIGNALS: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    # Explicit "Status: x" fields — the strongest signal a page can give.
+    (re.compile(r"\bstatus\s*[:\-]\s*(published|leaked|disclosed)\b", re.I), "published", 5),
+    (re.compile(r"\bstatus\s*[:\-]\s*(sold|purchased)\b", re.I), "sold", 5),
+    (re.compile(r"\bstatus\s*[:\-]\s*(removed|deleted)\b", re.I), "removed", 5),
+    # Unambiguous declarations.
+    (re.compile(r"\b(sold|purchased|buyer\s+found)\b", re.I), "sold", 3),
+    (re.compile(r"\b(removed|deleted|taken\s+down|withdrawn)\b", re.I), "removed", 3),
+    # Split out of `removed`, which it contradicted: a listing under negotiation is still up.
+    (re.compile(r"\b(negotiat\w*|in\s+talks|payment\s+pending)\b", re.I), "negotiating", 3),
+    (re.compile(r"\b(paid|ransom\s+paid)\b", re.I), "negotiating", 2),
+    # Standard listing wording.
+    (re.compile(r"\b(full\s+dump|disclosed|released|published)\b", re.I), "published", 2),
     (
         re.compile(r"\b(countdown|deadline|time\s+left|expires?\s+in|days?\s+left)\b", re.I),
         "countdown",
+        2,
     ),
-    (re.compile(r"\b(removed|deleted|paid|negotiat)\w*\b", re.I), "removed"),
+    # Also appears in page headers, so it cannot outvote anything on its own.
+    (re.compile(r"\b(leaked|leak)\b", re.I), "published", 1),
 )
+
+# Tie-break order, most decisive first. A listing that is both "sold" and "published" is
+# reported as sold: publication is the default outcome, a sale is the specific event.
+_STATUS_PRECEDENCE = ("removed", "sold", "negotiating", "published", "countdown")
+
+
+def resolve_status(candidates: Iterable[str | None]) -> str:
+    """Weigh every status phrase found for one listing and return the best-supported one.
+
+    Takes all of a record's status text rather than the first fragment, because a listing
+    usually states its state more than once ("Status: published" in the field, "released" in
+    the prose) and the repetition is exactly what distinguishes a real status from a stray
+    word in a sentence.
+    """
+    scores: dict[str, int] = {}
+
+    for raw in candidates:
+        if not raw:
+            continue
+        for pattern, status, weight in _STATUS_SIGNALS:
+            # Every occurrence counts: three mentions of "sold" is stronger evidence than one.
+            hits = len(pattern.findall(raw))
+            if hits:
+                scores[status] = scores.get(status, 0) + weight * hits
+
+    if not scores:
+        return "unknown"
+
+    best = max(scores.values())
+    tied = [status for status, score in scores.items() if score == best]
+    if len(tied) == 1:
+        return tied[0]
+
+    for status in _STATUS_PRECEDENCE:
+        if status in tied:
+            return status
+    return "unknown"  # pragma: no cover - every scored status is in the precedence list
 
 
 def parse_status(raw: str | None) -> str:
-    """Map free text to the `leak_status` enum. Unknown is a legitimate answer."""
-    if not raw:
-        return "unknown"
-    for pattern, status in _STATUS_PATTERNS:
-        if pattern.search(raw):
-            return status
-    return "unknown"
+    """Map a single blob of free text to the `leak_status` enum.
+
+    Kept as the single-string entry point; `resolve_status` is what the linker uses once it
+    has collected every status phrase belonging to a listing.
+    """
+    return resolve_status([raw])
 
 
 _DOMAIN_RE = re.compile(

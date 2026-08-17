@@ -43,6 +43,7 @@ class TorBrowserCollector:
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
+        self.last_error: str | None = None
 
     async def _ensure_started(self) -> None:
         if self._context is not None:
@@ -73,6 +74,7 @@ class TorBrowserCollector:
     async def fetch(self, url: str) -> str | None:
         await self._ensure_started()
         assert self._context is not None
+        self.last_error = None
 
         page = await self._context.new_page()
         try:
@@ -83,6 +85,7 @@ class TorBrowserCollector:
                 await page.wait_for_load_state("networkidle", timeout=15_000)
             return await page.content()
         except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
             log.warning("browser fetch failed", url=url, error=str(exc))
             return None
         finally:

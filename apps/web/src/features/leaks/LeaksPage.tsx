@@ -109,6 +109,7 @@ export function LeaksPage() {
               <option value="">Any status</option>
               <option value="published">published</option>
               <option value="countdown">countdown</option>
+              <option value="negotiating">negotiating</option>
               <option value="sold">sold</option>
               <option value="removed">removed</option>
               <option value="unknown">unknown</option>
@@ -136,7 +137,7 @@ export function LeaksPage() {
         </div>
 
         {query.isPending ? (
-          <TableSkeleton rows={8} cols={6} />
+          <TableSkeleton rows={8} cols={7} />
         ) : query.isError ? (
           <ErrorState error={query.error} onRetry={query.refetch} />
         ) : rows.length === 0 ? (
@@ -191,6 +192,15 @@ export function LeaksPage() {
                     >
                       First seen {sort === "first_seen_at" && (order === "asc" ? "▲" : "▼")}
                     </th>
+                    {/*
+                      The column that answers "is this listing still up?". `status` cannot:
+                      it only ever reports what the page said in words, and `removed` means
+                      the site printed the word "removed", not that the listing vanished.
+                      A last-seen time that stops advancing is what a delisting looks like.
+                    */}
+                    <th title="Last crawl that still saw this listing on the site">
+                      Last seen
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -211,6 +221,7 @@ export function LeaksPage() {
                       <td className="num">{formatBytes(leak.leakSizeBytes)}</td>
                       <td className="num">{formatDate(leak.publishedAt)}</td>
                       <td className="num">{formatRelative(leak.firstSeenAt)}</td>
+                      <td className="num">{formatRelative(leak.lastSeenAt)}</td>
                     </tr>
                   ))}
                 </tbody>

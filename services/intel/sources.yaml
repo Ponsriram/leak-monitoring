@@ -17,9 +17,9 @@
 # collector:        http (fast, no JS) | browser (Playwright, for JS-rendered listings)
 # pagination_style: none | query (?page=N) | path (/page/N) | offset (?offset=N)
 #
-# ALL sources use `collector: http`.
+# Nearly all sources use `collector: http`.
 #
-# They were originally marked `browser` because the old crawler routed everything through
+# They were originally ALL marked `browser` because the old crawler routed everything through
 # Selenium. That was wrong and expensive: the 2026-08-14 probe reached every one of them
 # over plain HTTP, while a full `browser` run timed out on six of them (cloak, funksec,
 # ijzn3sicrcy7, om6q4a6cyipx, ransomhouse, z3wqggtxft7i) — sites that plain HTTP had just
@@ -28,6 +28,29 @@
 # `browser` launches Firefox per source and waits on page lifecycle events; `http` is one
 # async request. Only switch a source back to `browser` if its listings genuinely render
 # client-side and come back empty over HTTP.
+#
+# Ten do, as of 2026-08-17. Each was identified by a specific symptom rather than guessed
+# at, and each was verified by running it both ways:
+#
+#   akira      HTTP 403 on every attempt, while the same address loads in Tor Browser —
+#              the site refuses clients that don't execute its challenge.
+#   blacksuit  302 to /b/challenge, which then returns 200. Plain HTTP was storing the
+#              challenge page and calling it a listing.
+#   cloak      302 to /verify_captcha, same story.
+#   blogvl7tjyjv, embargo, inc-ransom, j5o5y2feotmh, lynx, termite, zohlm7ahjweg
+#              all returned 0 characters of text over HTTP and real listings through
+#              Playwright. Switching them found 28 leaks on the first run, including 27
+#              from termite that had never been collected at all.
+#
+# Every one of them had been recorded as a *healthy* crawl while collecting nothing, because
+# a page that fetched but held no text counted as a success. It no longer does — see
+# MIN_PAGE_TEXT_CHARS in pipeline.py — which is how this list was found.
+#
+# Two sources still collect nothing and are honest failures rather than hidden ones:
+#
+#   cloak      serves a CAPTCHA interstitial. A browser reaches it but cannot pass it, and
+#              solving it automatically is not something this crawler will do.
+#   direwolf   29 characters of text either way. Needs investigating; possibly moved.
 
 - slug: 3ev4metjiroh
   name: 3Ev4Metjiroh
@@ -62,7 +85,8 @@
 - slug: akira
   name: Akira
   base_url: "https://akiralkzxzq2dsrzsrvbr2xgbbu2wgsmxryd4csgfameg52n7efvr2id.onion"
-  collector: http
+  # 403 over plain HTTP; loads fine in Tor Browser. See the note at the top of this file.
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -92,7 +116,8 @@
 - slug: blacksuit
   name: Blacksuit
   base_url: "http://black3gnkizshuynieigw6ejgpblb53mpasftzd6pydqpmq2vn2xf6yd.onion"
-  collector: http
+  # Redirects to /b/challenge. Plain HTTP stored the challenge page as if it were listings.
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -102,7 +127,8 @@
 - slug: blogvl7tjyjv
   name: Blogvl7Tjyjv
   base_url: "http://blogvl7tjyjvsfthobttze52w36wwiz34hrfcmorgvdzb6hikucb7aqd.onion"
-  collector: http
+  # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -112,7 +138,8 @@
 - slug: cloak
   name: Cloak
   base_url: "http://cloak7jpvcb73rtx2ff7kaw2kholu7bdiivxpzbhlny4ybz75dpxckqd.onion"
-  collector: http
+  # Redirects to /verify_captcha. Same as blacksuit: HTTP gets the interstitial, not the list.
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -132,7 +159,8 @@
 - slug: embargo
   name: Embargo
   base_url: "http://embargobe3n5okxyzqphpmk3moinoap2snz5k6765mvtkk7hhi544jid.onion"
-  collector: http
+  # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -162,7 +190,8 @@
 - slug: inc-ransom
   name: Inc Ransom
   base_url: "http://incblog6qu4y4mm4zvw5nrmue6qbwtgjsxpw6b7ixzssu36tsajldoad.onion/blog/disclosure"
-  collector: http
+  # 0 chars over HTTP; browser run found 3 listings (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -182,7 +211,8 @@
 - slug: j5o5y2feotmh
   name: J5O5Y2Feotmh
   base_url: "http://j5o5y2feotmhvr7cbcp2j2ewayv5mn5zenl3joqwx67gtfchhezjznad.onion"
-  collector: http
+  # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -212,7 +242,8 @@
 - slug: lynx
   name: Lynx
   base_url: "http://lynxblogtwatfsrwj3oatpejwxk5bngqcd5f7s26iskagfu7ouaomjad.onion/leak"
-  collector: http
+  # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -292,7 +323,8 @@
 - slug: termite
   name: Termite
   base_url: "http://termiteuslbumdge2zmfmfcsrvmvsfe4gvyudc5j6cdnisnhtftvokid.onion"
-  collector: http
+  # 0 chars over HTTP; browser run found 27 listings (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600
@@ -322,7 +354,8 @@
 - slug: zohlm7ahjweg
   name: Zohlm7Ahjweg
   base_url: "http://zohlm7ahjwegcedoz7lrdrti7bvpofymcayotp744qhx6gjmxbuo2yid.onion"
-  collector: http
+  # 0 chars over HTTP; browser run found 17 listings (verified 2026-08-17).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 3600

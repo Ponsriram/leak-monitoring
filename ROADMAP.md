@@ -392,6 +392,111 @@ back empty over HTTP.
 
 ---
 
+## Throughput, syncing and tags — 2026-08-18
+
+Three things the system was doing badly, and what changed.
+
+### Pages of one source are now fetched together
+
+`crawl_source` walked pages strictly in order with a `request_delay_seconds` sleep between
+each. Cross-source concurrency did nothing for a source that was simply deep: ten pages meant
+ten sequential Tor round trips at 20-30s apiece.
+
+Pages now go out in **doubling waves** — `[1]`, `[2-5]`, `[6-13]`, … — stopping at the first
+page that comes back empty (`intel/scheduling.py`). Reaching the end of a P-page listing
+costs O(log P) round trips instead of O(P), and because only the last wave can overshoot,
+never more than about 2P pages are requested. That over-fetch is unavoidable: a listing's
+length is not knowable until a page comes back empty. It is counted, reported by `intel run`,
+and bounded by `CRAWL_PAGE_WAVE_CAP`.
+
+Page 1 is still fetched alone. It decides reachability, mirror failover and challenge
+detection, and a failover changes the address every other page would have come from.
+
+- [x] `intel/scheduling.py` — wave planner, 8 tests
+- [x] `crawl_source` rewritten around it, 11 tests with a fake collector that measures
+      in-flight overlap and asserts the walk stays logarithmic
+- [x] `CRAWL_PAGE_CONCURRENCY`, `CRAWL_PAGE_WAVE_CAP`, `CRAWL_MAX_INFLIGHT`
+- [x] One run-wide fetch budget, so per-source and per-page concurrency cannot multiply into
+      64 simultaneous circuits
+
+### Scheduled syncing actually respects each source's interval
+
+`sources.crawl_interval_seconds` was written by every operator and read by nobody: the only
+schedule was one hourly `crawl_all`. A source set to 15 minutes refreshed hourly, and 30
+stable sources were refetched on that same hour whether or not anything had changed.
+
+- [x] `crawl_due` + `due_sources()` — sweeps every 5 minutes, crawls only what is due
+- [x] `intel run --due-only` runs the same selection by hand
+
+### Syncing on demand, from the app
+
+There was no way to ask for a crawl from the UI, and the API cannot enqueue an arq job — arq
+pickles its payloads and the API is TypeScript. A `crawl_requests` row is the handoff instead:
+the API writes, a 10-second worker tick claims it under the existing advisory lock.
+
+- [x] `crawl_requests` table (migration `0003`), claimed with `for update skip locked`
+- [x] `drain_crawl_requests` — drains the queue while holding the crawl lock, and expires
+      requests stranded by a worker that died mid-crawl
+- [x] `POST /api/crawl`, `GET /api/crawl/status`, `GET /api/crawl/requests`
+- [x] **Sync now** on the Leaks page: real queued → running → succeeded states, and the table
+      refreshes when the crawl *finishes* rather than when the click lands
+- [x] **Latest arrivals** strip — newest listings by `first_seen_at`, with the ones this sync
+      found marked new
+
+### Location and sector are extracted at last
+
+`victim_country` and `victim_sector` had been columns since migration `0000` with nothing
+writing to them, so the table could only ever answer "who", never "where".
+
+- [x] `intel/extract/gazetteer.py` — country aliases, ccTLD inference, sector keywords
+- [x] `location` and `sector` labels through rules, GLiNER prompts and the linker
+- [x] ccTLD inference excludes globally-sold codes (`.io`, `.co`, `.ai`, `.me`) — a wrong
+      country is worse than a null one, because once written the two are indistinguishable
+- [x] Country names rejected as victim organisations — "United States" was opening a record
+      of its own and stealing the real victim's domain
+- [x] Partial indexes on both columns (migration `0004`), `country` / `sector` filters on
+      `/api/leaks`, `/api/stats/leaks-per-tag` for the dropdowns
+- [x] Tags column on the Leaks page, rendered as outlined chips: these are inferred, and
+      should not look as certain as a status the site printed itself
+- [x] `upsert_leaks` now coalesces both columns on conflict — they were written on insert
+      only, so no existing row would ever have gained them
+- [x] Seed data moved onto the same canonical vocabulary ("United States", not "US")
+
+Tests: 150 Python, 9 schema. Full workspace typecheck clean.
+
+---
+
+## Demo data removed — 2026-08-18
+
+The dashboard was showing 144 invented victims mixed into 1,310 collected ones, and nothing
+in the UI distinguished them.
+
+`npm run db:seed` wrote the Microsoft sample-company set — Northwind Logistics, Contoso
+Manufacturing, Fabrikam Health — as real `leaks` rows. They counted toward every total on the
+Overview page, every point on the per-day chart, and every option in the group, location and
+sector dropdowns. Nothing marked them, so a number that was 90% real and 10% invented looked
+exactly like a real one.
+
+- [x] 144 fixture rows deleted from the development database (backup first:
+      `backups/pre-mock-removal-20260818-152652.sql`)
+- [x] `src/seed.ts` → `test/fixture-seed.ts` — out of the package's shipped surface
+- [x] `npm run db:seed` removed from the root scripts entirely
+- [x] The fixture now **refuses to run** against a database containing any leak it did not
+      write, so it cannot reach a real dataset even when invoked directly
+- [x] CI calls it explicitly (`npm run fixture:ci -w @leak/db`), which is the only place it
+      may run: the smoke test asserts exact counts and CI has no Tor, so it cannot collect
+
+**Why it was kept at all.** `scripts/smoke-api.sh` checks that pagination caps a real result
+set, that a group filter returns only that group, that full-text search matches, and that
+per-source `leakCount` correlates — the last of which once passed while every count was
+wrong. None of those can be checked against an empty database, and CI cannot crawl.
+
+Not removed, and not mock data: `services/intel/tests/fixtures/sample_leak_page.txt` (an
+extractor test input — it never reaches the database) and the `FakeCollector`/`FakeStorage`
+doubles in `test_pipeline_concurrency.py` (test doubles, so the crawl tests need no Tor).
+
+---
+
 ## Decisions log
 
 Record anything we change our mind about, so the reasoning survives.
@@ -412,3 +517,8 @@ Record anything we change our mind about, so the reasoning survives.
 | 2026-08-14 | Sources ship disabled | Crawling live ransomware infrastructure should be an explicit act, not a side effect of `sources sync`. |
 | 2026-08-14 | Actor group comes from the source, not the text | We know which site we crawled. Guessing it from prose is what forced the old `orphan_entries` machinery. |
 | 2026-08-14 | Extraction is per page, not per corpus | The old code ran NER over every site concatenated, then reassociated entities by position. Per page, a victim and the date beside it are unambiguous. |
+| 2026-08-18 | Doubling page waves over "fetch all max_pages" | A listing's length is unknown until a page comes back empty. Waves get O(log P) round trips while over-fetching at most ~2x, where firing all `max_pages` would burn a circuit per page on sources that have three. |
+| 2026-08-18 | `crawl_requests` table over the API enqueuing arq | arq pickles its job payloads; producing one from TypeScript means maintaining a pickle encoder against a library the API does not depend on. Both processes already share Postgres, and a row is inspectable when a sync appears to do nothing. |
+| 2026-08-18 | Country inferred from ccTLD, but never from `.io`/`.co`/`.ai` | These are national codes sold worldwide. A wrong country in `victim_country` is indistinguishable from a right one and silently skews every filter built on it. |
+| 2026-08-18 | Tags rendered as outlined chips, status as filled | Status is what the leak site said. Location and sector are our inference from a gazetteer and a domain suffix. They should not carry equal visual authority. |
+| 2026-08-18 | Demo data deleted; the fixture kept but made unreachable | Invented victims in `leaks` are indistinguishable from collected ones and silently inflate every aggregate built on that table. CI still needs rows to test an API against, and cannot crawl — so the fixture survives under `test/`, refuses any database holding a real leak, and is no longer one word away from a developer's own. |

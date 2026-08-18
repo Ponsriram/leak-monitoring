@@ -137,8 +137,16 @@ dashboard refreshes itself every 60 seconds.
 
 ## 4. Automatic crawling
 
-Already running. The worker has a cron schedule built in — **every hour at :17** it crawls
-every enabled source. You don't need to do anything.
+Already running, and you don't need to do anything. The worker has two schedules built in:
+
+| Every | Does |
+|---|---|
+| 5 minutes | Crawls the sources whose own `crawl_interval_seconds` has elapsed — nothing else |
+| 10 seconds | Picks up anything the app's **Sync now** button has queued |
+
+The sweep is per-source, so a site set to refresh every 15 minutes actually refreshes every
+15 minutes, and a stable one set to 6 hours is left alone in between. Change a source's
+cadence in `sources.yaml` and re-run `intel sources sync`.
 
 Watch it:
 
@@ -146,10 +154,23 @@ Watch it:
 npm run infra:logs
 ```
 
-Trigger a full run immediately instead of waiting:
+### Sync on demand
+
+Click **Sync now** on the Leaks page. It queues a crawl the worker picks up within about ten
+seconds, and the button reports the request's real state — *queued* while another crawl holds
+the Tor lock, *syncing* while pages are being fetched, then how many leaks were new. The
+table refreshes itself when the crawl finishes, not when the click lands.
+
+Or from the command line:
 
 ```bash
 npm run intel -- run
+```
+
+Only the sources that are due:
+
+```bash
+npm run intel -- run --due-only
 ```
 
 ---
@@ -180,7 +201,7 @@ not as reliable intelligence yet. See the "First live crawl" section of
 | Restart just the API | `docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d api` |
 | Back up the database | `npm run infra:backup` |
 | Browse the database | `npm run db:studio` |
-| Add demo data | `npm run db:seed` — *adds* 144 demo leaks if absent; safe to re-run, and does not remove crawled rows |
+| Collect data | `npm run intel -- run` — a real crawl. There is no demo-data command; see below |
 
 ### Enable / disable sources
 
@@ -279,7 +300,34 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 ```bash
-npm run db:migrate && npm run db:seed
+npm run db:migrate
+```
+
+The database starts empty. It fills when you enable sources and crawl — there is no seed
+step, deliberately (see [No demo data](#no-demo-data)).
+
+## No demo data
+
+Everything this app shows is collected. There is no `db:seed`, and nothing writes invented
+rows into your database.
+
+There used to be. `npm run db:seed` wrote 144 fictional victims — Northwind Logistics,
+Contoso Manufacturing, the Microsoft sample-company set — and once they were in `leaks` they
+were indistinguishable from real listings at a glance, while counting toward every dashboard
+total, every chart, and every entry in the group, location and sector filters. A number on
+the Overview page that is part real and part invented is worse than no number.
+
+That fixture still exists, at `packages/db/test/fixture-seed.ts`, because CI's API smoke test
+runs against a throwaway Postgres with no Tor and so cannot collect anything — and an API
+tested against an empty database is barely tested. It refuses to run against any database
+holding a leak it did not write, so it cannot reach yours.
+
+**So an empty dashboard means collection has not run yet, not that the app is broken.** Enable
+a source and crawl:
+
+```bash
+npm run intel -- sources enable <slug>
+npm run intel -- run
 ```
 
 ## Verifying

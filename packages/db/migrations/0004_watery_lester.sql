@@ -1,0 +1,2 @@
+CREATE INDEX "leaks_victim_country_idx" ON "leaks" USING btree ("victim_country","first_seen_at" DESC NULLS LAST) WHERE "leaks"."victim_country" is not null;--> statement-breakpoint
+CREATE INDEX "leaks_victim_sector_idx" ON "leaks" USING btree ("victim_sector","first_seen_at" DESC NULLS LAST) WHERE "leaks"."victim_sector" is not null;

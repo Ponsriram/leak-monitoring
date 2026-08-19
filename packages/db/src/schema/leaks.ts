@@ -112,6 +112,19 @@ export const leaks = pgTable(
     index("leaks_published_at_idx").on(t.publishedAt.desc()),
     index("leaks_source_idx").on(t.sourceId),
 
+    /**
+     * The two tag filters on the Leaks page. Both columns are heavily null — a listing that
+     * names no country and whose domain carries no ccTLD gets neither — so these are
+     * partial: the index covers only the rows a filter can ever return, and skips the
+     * nulls, which are the majority.
+     */
+    index("leaks_victim_country_idx")
+      .on(t.victimCountry, t.firstSeenAt.desc())
+      .where(sql`${t.victimCountry} is not null`),
+    index("leaks_victim_sector_idx")
+      .on(t.victimSector, t.firstSeenAt.desc())
+      .where(sql`${t.victimSector} is not null`),
+
     // Full-text search over victim identity, so the table's search box hits an index
     // instead of pulling every row to the browser and filtering there.
     index("leaks_victim_search_idx").using(

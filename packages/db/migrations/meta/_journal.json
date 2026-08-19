@@ -22,6 +22,20 @@
       "when": 1786914485032,
       "tag": "0002_lonely_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787043933522,
+      "tag": "0003_heavy_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787044522769,
+      "tag": "0004_watery_lester",
+      "breakpoints": true
     }
   ]
 }

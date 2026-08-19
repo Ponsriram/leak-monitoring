@@ -25,6 +25,8 @@ DEFAULT_LABELS: tuple[str, ...] = (
     "date",
     "leak_size",
     "status",
+    "location",
+    "sector",
 )
 
 

@@ -33,6 +33,12 @@ _LABEL_PROMPTS: dict[str, str] = {
     "publication date": "date",
     "data size": "leak_size",
     "leak status": "status",
+    # The two fields the rules extractor can only reach through a gazetteer and a ccTLD.
+    # A model reads "headquartered in Bavaria" and "a regional health network"; a word list
+    # never will. Adding them costs two lines here and no retraining — the reason zero-shot
+    # NER replaced the fine-tuned spaCy model whose training data was never committed.
+    "country or region": "location",
+    "industry sector": "sector",
 }
 
 

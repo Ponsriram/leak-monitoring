@@ -233,3 +233,88 @@ def test_raw_date_text_is_preserved_for_audit() -> None:
     # can be diagnosed rather than guessed at.
     assert leaks[0].published_at is None
     assert leaks[0].published_at_raw == "sometime in 2026"
+
+
+# ---------------------------------------------------------------- location and sector tags
+
+
+def test_a_location_attaches_to_the_listing_it_follows() -> None:
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Northwind Logistics", 0, 19),
+            Span(Label.LOCATION, "Germany", 20, 27),
+            Span(Label.VICTIM, "Fairview Health", 30, 45),
+            Span(Label.LOCATION, "Canada", 46, 52),
+        ],
+        source_group="lockbit",
+    )
+    assert [leak.victim_country for leak in leaks] == ["Germany", "Canada"]
+
+
+def test_a_location_span_is_normalized_before_it_is_stored() -> None:
+    """"USA" and "america" are one country in the filter, not three."""
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Northwind Logistics", 0, 19),
+            Span(Label.LOCATION, "USA", 20, 23),
+        ],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_country == "United States"
+
+
+def test_the_domain_supplies_a_country_when_the_page_names_none() -> None:
+    """The common case: listings print a domain far more often than a location."""
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Northwind Logistics", 0, 19),
+            Span(Label.VICTIM_URL, "northwind.fr", 20, 32),
+        ],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_country == "France"
+
+
+def test_a_stated_country_overrides_the_domain() -> None:
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Northwind Logistics", 0, 19),
+            Span(Label.VICTIM_URL, "northwind.com", 20, 33),
+            Span(Label.LOCATION, "Japan", 34, 39),
+        ],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_country == "Japan"
+
+
+def test_the_sector_comes_from_the_victim_name_with_no_span_at_all() -> None:
+    leaks = link_spans(
+        [Span(Label.VICTIM, "Fairview Medical Center", 0, 23)],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_sector == "Healthcare"
+
+
+def test_a_sector_span_is_weighed_alongside_the_name() -> None:
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Northwind Group", 0, 15),
+            Span(Label.SECTOR, "logistics", 16, 25),
+            Span(Label.SECTOR, "freight", 26, 33),
+        ],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_sector == "Transportation & Logistics"
+
+
+def test_a_suppressed_victim_name_contributes_no_sector() -> None:
+    """"Financial" standing in for a name is a section heading, not the victim's industry."""
+    leaks = link_spans(
+        [
+            Span(Label.VICTIM, "Financial", 0, 9),
+            Span(Label.VICTIM_URL, "northwind.example", 10, 27),
+        ],
+        source_group="lockbit",
+    )
+    assert leaks[0].victim_name is None
+    assert leaks[0].victim_sector is None

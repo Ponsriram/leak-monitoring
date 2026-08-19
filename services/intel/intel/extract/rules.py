@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+from .gazetteer import COUNTRY_PATTERN, SECTOR_PATTERN, is_country_name
 from .linker import Label, Span
 from .normalize import _DOMAIN_DENYLIST  # noqa: PLC2701 - shared denylist, single source
 
@@ -69,6 +70,18 @@ _ORG_SUFFIX = re.compile(
 )
 
 
+# How far from a victim or a domain a country or sector mention may sit and still be read
+# as belonging to that listing.
+#
+# The window is the whole point. `COUNTRY_PATTERN` and `SECTOR_PATTERN` are alternations
+# over several hundred words, so sweeping a page with them unguarded matches the footer
+# ("© 2026 … United States"), the navigation and the crew's own boilerplate, and the linker
+# — which attributes by reading order — would hand every one of those to whichever victim
+# happened to precede it. Requiring the mention to sit near an actual victim or domain span
+# is what separates "this listing is German" from "this page mentions Germany".
+_TAG_WINDOW_CHARS = 250
+
+
 class RulesExtractor:
     """Pattern-based extraction. Deterministic and fast."""
 
@@ -116,6 +129,24 @@ class RulesExtractor:
                 Span(Label.VICTIM, candidate, match.start(), match.end(), 0.6)
             )
 
+        # Country and sector are matched last, because whether a mention counts depends on
+        # where the victim and domain spans landed.
+        anchors = [
+            (span.start, span.end)
+            for span in spans
+            if span.label in (Label.VICTIM, Label.VICTIM_URL)
+        ]
+        for match in COUNTRY_PATTERN.finditer(text):
+            if _near_an_anchor(match.start(), match.end(), anchors):
+                spans.append(
+                    Span(Label.LOCATION, match.group(1), match.start(), match.end(), 0.7)
+                )
+        for match in SECTOR_PATTERN.finditer(text):
+            if _near_an_anchor(match.start(), match.end(), anchors):
+                spans.append(
+                    Span(Label.SECTOR, match.group(1), match.start(), match.end(), 0.6)
+                )
+
         # The linker is order-sensitive by design — restore document order.
         spans.sort(key=lambda span: (span.start, span.end))
         return _dedupe_overlaps(spans)
@@ -155,6 +186,7 @@ def _is_plausible_org(candidate: str) -> bool:
 
     * ALL-CAPS with no legal suffix is a banner ("LOCKBIT LEAKED DATA"), not a company.
       Listings render real company names in Title Case.
+    * A candidate that is exactly a country name is the listing's location column.
     * Any word that only ever appears in site chrome disqualifies the whole candidate —
       no registered company is called "Leaked Data".
     """
@@ -163,7 +195,23 @@ def _is_plausible_org(candidate: str) -> bool:
     if candidate.isupper() and not _ORG_SUFFIX.search(candidate):
         return False
 
+    # A country name on its own is a location, not a company. It reads as a perfectly good
+    # organisation to every other test here — Title Case, multi-word, sitting beside a
+    # domain — and once accepted it opens a record that steals the real victim's domain.
+    if is_country_name(candidate):
+        return False
+
     return all(word.strip(".,").lower() not in _NOT_AN_ORG for word in words)
+
+
+def _near_an_anchor(
+    start: int, end: int, anchors: list[tuple[int, int]], window: int = _TAG_WINDOW_CHARS
+) -> bool:
+    """True when this match sits within `window` characters of a victim or domain span."""
+    return any(
+        start - anchor_end <= window and anchor_start - end <= window
+        for anchor_start, anchor_end in anchors
+    )
 
 
 def _dedupe_overlaps(spans: list[Span]) -> list[Span]:

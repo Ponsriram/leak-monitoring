@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..models import ExtractedLeak, ExtractionMeta, LeakStatus
+from .gazetteer import resolve_country, resolve_sector
 from .normalize import extract_domain, parse_date, parse_size, resolve_status
 
 
@@ -36,6 +37,10 @@ class Label:
     DATE = "date"
     SIZE = "leak_size"
     STATUS = "status"
+    # Where the victim is and what it does. Both were columns on `leaks` from the first
+    # migration with nothing ever writing to them; these are the labels that fill them.
+    LOCATION = "location"
+    SECTOR = "sector"
 
 
 @dataclass(slots=True)
@@ -60,6 +65,11 @@ class _Record:
     # only the first meant a stray word in the description outranked the status field below
     # it purely because it appeared earlier on the page.
     status_raws: list[str] = field(default_factory=list)
+    # Collected rather than first-wins, for the same reason as `status_raws`: a listing that
+    # names its victim's country twice is stronger evidence than one that mentions a country
+    # in passing, and `resolve_*` weighs the whole set.
+    location_raws: list[str] = field(default_factory=list)
+    sector_raws: list[str] = field(default_factory=list)
     group_override: str | None = None
     confidences: list[float] = field(default_factory=list)
 
@@ -126,6 +136,10 @@ def link_spans(
                 record.size_raw = record.size_raw or span.text
             case Label.STATUS:
                 record.status_raws.append(span.text)
+            case Label.LOCATION:
+                record.location_raws.append(span.text)
+            case Label.SECTOR:
+                record.sector_raws.append(span.text)
 
     # URL spans are applied after every record exists, since one may belong to a victim that
     # has not been read yet.
@@ -147,6 +161,8 @@ def link_spans(
                 current.date_raw = pending.date_raw
                 current.size_raw = pending.size_raw
                 current.status_raws.extend(pending.status_raws)
+                current.location_raws.extend(pending.location_raws)
+                current.sector_raws.extend(pending.sector_raws)
                 current.confidences.extend(pending.confidences)
                 pending = _Record(victim_url=pending.victim_url)
             records.append(current)
@@ -279,9 +295,22 @@ def _to_leak(
         sum(record.confidences) / len(record.confidences) if record.confidences else None
     )
 
+    # The victim's own name is the single most reliable sector evidence there is —
+    # "Northwind Medical Group" and "Fairview Unified School District" say what they do —
+    # so it is weighed alongside whatever the extractor labelled as a sector. The suppressed
+    # name is used deliberately: a record left displaying only "Financial" is a section
+    # heading the extractor mistook for a victim, and reading a sector off it would turn one
+    # bad span into a second bad field.
+    sector = resolve_sector([victim_name or "", *record.sector_raws])
+    # Explicit text first, the domain's ccTLD as the fallback. Most listings name no country
+    # at all, so the ccTLD is what actually fills this column.
+    country = resolve_country(record.location_raws, domain=domain)
+
     return ExtractedLeak(
         victim_name=victim_name,
         victim_domain=domain,
+        victim_country=country,
+        victim_sector=sector,
         actor_group=source_group,
         source_url=source_url,
         source_page_no=page_no,

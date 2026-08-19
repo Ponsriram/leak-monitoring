@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import structlog
 
@@ -17,6 +18,7 @@ from .collectors import classify_onion_urls, get_collector, onion_host, page_url
 from .config import Settings
 from .extract import get_extractor, link_spans
 from .models import ExtractedLeak
+from .scheduling import page_waves
 from .storage import SourceRow, Storage, UpsertResult
 
 log = structlog.get_logger(__name__)
@@ -38,6 +40,19 @@ class SourceResult:
     error: str | None = None
     mirrors_found: int = 0
     switched_to: str | None = None
+    # Pages fetched by a wave that turned out to sit past the end of the listing. The price
+    # of not knowing where a listing ends until you have asked; watch it to tune
+    # CRAWL_PAGE_CONCURRENCY against a source's real depth.
+    pages_discarded: int = 0
+
+
+@dataclass(slots=True)
+class _Page:
+    """A fetch that has come back, before it is known to belong to the listing."""
+
+    page_no: int
+    url: str
+    html: str | None
 
 
 @dataclass(slots=True)
@@ -60,6 +75,11 @@ class RunResult:
     def new_leak_ids(self) -> list[int]:
         return [id_ for source in self.sources for id_ in source.leaks.new_leak_ids]
 
+    @property
+    def discarded(self) -> int:
+        """Speculatively fetched pages that turned out to sit past a listing's end."""
+        return sum(source.pages_discarded for source in self.sources)
+
 
 async def crawl_source(
     source: SourceRow,
@@ -67,11 +87,19 @@ async def crawl_source(
     storage: Storage,
     settings: Settings,
     extractor_name: str | None = None,
+    fetch_slots: asyncio.Semaphore | None = None,
 ) -> SourceResult:
     """Crawl one source end to end. Never raises — failures are recorded, not propagated.
 
     One bad source must not abort the run; the old script died on the first unhandled
     exception and lost every page it had already fetched.
+
+    Pages are fetched in concurrent, doubling waves (`intel.scheduling.page_waves`) rather
+    than one at a time. Reaching the end of a P-page listing costs O(log P) sequential Tor
+    round trips instead of O(P) — the single biggest term in a crawl's wall-clock time,
+    since a page fetch over Tor is tens of seconds and everything downstream of it is
+    milliseconds. `fetch_slots` is the run-wide budget on simultaneous fetches; pass the one
+    `run_pipeline` builds so pages and sources share a ceiling instead of multiplying.
     """
     result = SourceResult(slug=source.slug)
     run_id = await storage.start_crawl(source.id)
@@ -92,111 +120,163 @@ async def crawl_source(
     crawl_base = source.crawl_url
     known_hosts = await storage.known_onion_hosts() if settings.discover_mirrors else set()
 
+    width = max(1, settings.page_concurrency)
+    # A caller with no run-wide budget (the CLI crawling one source) gets a private one, so
+    # this function is never unbounded regardless of how it is entered.
+    slots = fetch_slots if fetch_slots is not None else asyncio.Semaphore(width)
+    # The old politeness rule was a full `request_delay_seconds` sleep between pages. Spread
+    # across a wave instead: the site still sees requests arrive at the configured rate, but
+    # they overlap in flight rather than queueing behind each other.
+    stagger = source.request_delay_seconds / width if source.request_delay_seconds > 0 else 0.0
+
+    async def fetch_page(page_no: int, base: str, delay: float = 0.0) -> _Page | None:
+        """Fetch one page. None means this source has no URL for that page number."""
+        url = page_url(base, page_no, source.pagination_style)
+        if url is None:
+            return None
+        if delay > 0:
+            await asyncio.sleep(delay)
+        async with slots:
+            return _Page(page_no, url, await collector.fetch(url))
+
+    async def fetch_wave(pages: list[int], base: str) -> list[_Page]:
+        """Fetch a whole wave at once, returned in page order."""
+        fetched = await asyncio.gather(
+            *(fetch_page(no, base, stagger * offset) for offset, no in enumerate(pages))
+        )
+        return [page for page in fetched if page is not None]
+
+    async def process(page: _Page) -> bool:
+        """Fold one fetched page into the result. False means the listing ended here."""
+        if page.html is None:
+            # A missing page N>1 just means the listing ended.
+            return False
+
+        # Counted here, before the content checks below. These two lines used to sit
+        # after the empty-page check, so a source that returned a challenge page — a
+        # real fetch, just not a listing — was recorded as a successful crawl of zero
+        # pages, which reset its failure counter and made a blocked site look healthy.
+        result.pages_fetched += 1
+        result.bytes_fetched += len(page.html.encode("utf-8"))
+
+        text = to_text(page.html)
+
+        if settings.discover_mirrors:
+            result.mirrors_found += await _record_mirrors(
+                text, source=source, storage=storage, url=page.url, known_hosts=known_hosts
+            )
+
+        if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
+            if page.page_no == 1:
+                # Reached, returned something, but nothing to read. Almost always a JS
+                # challenge or an interstitial, and worth failing loudly: the source
+                # needs `collector: browser` or a new address, and silence here is how
+                # akira sat at "succeeded" for days while collecting nothing.
+                result.status = "failed"
+                result.error = (
+                    f"page 1 returned {len(text.strip())} chars of text — challenge page "
+                    f"or JS-rendered listing (try collector: browser)"
+                )
+            log.info("page empty, stopping", source=source.slug, page=page.page_no)
+            return False
+
+        page_id, changed = await storage.save_page(
+            source_id=source.id,
+            crawl_run_id=run_id,
+            url=page.url,
+            page_no=page.page_no,
+            text=text,
+        )
+
+        if not changed:
+            # The content hash already exists for this source: nothing new here, and
+            # nothing downstream needs to run. This is the short circuit that makes
+            # repeat crawls cheap.
+            log.debug(
+                "page unchanged, skipping extraction", source=source.slug, page=page.page_no
+            )
+            return True
+
+        result.pages_changed += 1
+
+        leaks = extract_page(
+            text,
+            source_group=source.slug,
+            source_url=page.url,
+            page_no=page.page_no,
+            extractor_name=extractor.name,
+            extractor=extractor,
+        )
+        upserted = await storage.upsert_leaks(leaks, source_id=source.id)
+        result.leaks.inserted += upserted.inserted
+        result.leaks.updated += upserted.updated
+        result.leaks.skipped += upserted.skipped
+        result.leaks.new_leak_ids.extend(upserted.new_leak_ids)
+
+        await storage.mark_extracted(page_id)
+
+        log.info(
+            "page processed",
+            source=source.slug,
+            page=page.page_no,
+            found=len(leaks),
+            new=upserted.inserted,
+            seen_again=upserted.updated,
+        )
+        return True
+
     try:
-        for page_no in range(1, source.max_pages + 1):
-            url = page_url(crawl_base, page_no, source.pagination_style)
-            if url is None:
-                break
+        waves = page_waves(source.max_pages, width=width, cap=settings.page_wave_cap)
+        # Page 1 is fetched on its own, ahead of any speculation. It decides whether the
+        # source is reachable, whether to fail over to a mirror, and whether what came back
+        # is a listing at all — and a failover changes the address every other page would
+        # have been fetched from, so pages speculated on beforehand are wasted circuits
+        # against an address we are in the middle of abandoning.
+        next(waves)
+        first = await fetch_page(1, crawl_base)
+        if first is None:  # pragma: no cover - page 1 is always the base URL
+            return result
 
-            html = await collector.fetch(url)
-
-            if html is None and page_no == 1:
-                # The primary address is unreachable. Before recording a failure, try the
-                # addresses this site has published about itself — that is the whole point
-                # of collecting them.
-                html, moved_to = await _try_mirrors(
-                    source, storage=storage, collector=collector, settings=settings
-                )
-                if moved_to is not None:
-                    crawl_base = moved_to
-                    result.switched_to = moved_to
-                    url = moved_to
-
-            if html is None:
-                # A missing page N>1 just means the listing ended.
-                if page_no == 1:
-                    result.status = "failed"
-                    reason = getattr(collector, "last_error", None)
-                    result.error = (
-                        f"could not fetch {url}: {reason}" if reason
-                        else f"could not fetch {url}"
-                    )
-                break
-
-            # Counted here, before the content checks below. These two lines used to sit
-            # after the empty-page check, so a source that returned a challenge page — a
-            # real fetch, just not a listing — was recorded as a successful crawl of zero
-            # pages, which reset its failure counter and made a blocked site look healthy.
-            result.pages_fetched += 1
-            result.bytes_fetched += len(html.encode("utf-8"))
-
-            text = to_text(html)
-
-            if settings.discover_mirrors:
-                result.mirrors_found += await _record_mirrors(
-                    text, source=source, storage=storage, url=url, known_hosts=known_hosts
-                )
-
-            if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
-                if page_no == 1:
-                    # Reached, returned something, but nothing to read. Almost always a JS
-                    # challenge or an interstitial, and worth failing loudly: the source
-                    # needs `collector: browser` or a new address, and silence here is how
-                    # akira sat at "succeeded" for days while collecting nothing.
-                    result.status = "failed"
-                    result.error = (
-                        f"page 1 returned {len(text.strip())} chars of text — challenge page "
-                        f"or JS-rendered listing (try collector: browser)"
-                    )
-                log.info("page empty, stopping", source=source.slug, page=page_no)
-                break
-
-            page_id, changed = await storage.save_page(
-                source_id=source.id,
-                crawl_run_id=run_id,
-                url=url,
-                page_no=page_no,
-                text=text,
+        if first.html is None:
+            # The primary address is unreachable. Before recording a failure, try the
+            # addresses this site has published about itself — that is the whole point
+            # of collecting them.
+            html, moved_to = await _try_mirrors(
+                source, storage=storage, collector=collector, settings=settings
             )
+            if moved_to is not None:
+                crawl_base = moved_to
+                result.switched_to = moved_to
+            first = _Page(1, moved_to or first.url, html)
 
-            if not changed:
-                # The content hash already exists for this source: nothing new here, and
-                # nothing downstream needs to run. This is the short circuit that makes
-                # repeat crawls cheap.
-                log.debug("page unchanged, skipping extraction", source=source.slug, page=page_no)
-                continue
-
-            result.pages_changed += 1
-
-            leaks = extract_page(
-                text,
-                source_group=source.slug,
-                source_url=url,
-                page_no=page_no,
-                extractor_name=extractor.name,
-                extractor=extractor,
+        if first.html is None:
+            result.status = "failed"
+            reason = getattr(collector, "last_error", None)
+            result.error = (
+                f"could not fetch {first.url}: {reason}"
+                if reason
+                else f"could not fetch {first.url}"
             )
-            upserted = await storage.upsert_leaks(leaks, source_id=source.id)
-            result.leaks.inserted += upserted.inserted
-            result.leaks.updated += upserted.updated
-            result.leaks.skipped += upserted.skipped
-            result.leaks.new_leak_ids.extend(upserted.new_leak_ids)
+            return result
 
-            await storage.mark_extracted(page_id)
+        batch = [first]
+        while True:
+            for index, page in enumerate(batch):
+                if not await process(page):
+                    # Everything after the terminal page in this wave was fetched
+                    # speculatively and sits past the end of the listing. Dropped rather
+                    # than processed: "the first page that comes back empty ends the
+                    # listing" is the rule the sequential crawler enforced, and page
+                    # numbering downstream assumes it.
+                    result.pages_discarded += len(batch) - index - 1
+                    return result
 
-            log.info(
-                "page processed",
-                source=source.slug,
-                page=page_no,
-                found=len(leaks),
-                new=upserted.inserted,
-                seen_again=upserted.updated,
-            )
-
-            # Politeness delay between pages of the same source. Other sources are being
-            # crawled concurrently, so this costs nothing in wall-clock terms.
-            if page_no < source.max_pages:
-                await asyncio.sleep(source.request_delay_seconds)
+            wave = next(waves, None)
+            if wave is None:
+                break
+            batch = await fetch_wave(wave, crawl_base)
+            if not batch:
+                break
 
     except asyncio.CancelledError:
         # Cancellation is NOT an Exception subclass, so it used to fall straight through to
@@ -348,32 +428,83 @@ def extract_page(
     )
 
 
+def due_sources(sources: list[SourceRow], *, now: datetime | None = None) -> list[SourceRow]:
+    """Keep only the sources whose own interval says they are ready to be crawled again.
+
+    `sources.crawl_interval_seconds` existed from the first migration and nothing ever read
+    it: the scheduler ran every enabled source on one hourly cron. So a fast-moving site
+    configured for 15 minutes was refetched hourly, and 30 stable sites were refetched
+    hourly whether or not anything about them had changed — which is how an hour-long job
+    grew to reliably outlive its own window.
+
+    A source that has never been crawled is always due.
+    """
+    moment = now or datetime.now(UTC)
+    ready: list[SourceRow] = []
+    for source in sources:
+        if source.last_crawl_at is None:
+            ready.append(source)
+            continue
+        elapsed = (moment - source.last_crawl_at).total_seconds()
+        if elapsed >= source.crawl_interval_seconds:
+            ready.append(source)
+    return ready
+
+
 async def run_pipeline(
     *,
     storage: Storage,
     settings: Settings,
     slugs: list[str] | None = None,
     extractor_name: str | None = None,
+    only_due: bool = False,
 ) -> RunResult:
-    """Crawl sources concurrently, bounded by `settings.concurrency`."""
+    """Crawl sources concurrently, bounded by `settings.concurrency`.
+
+    `only_due` is what the scheduler passes: crawl the sources whose `crawl_interval_seconds`
+    has elapsed and leave the rest alone. Manual runs pass False, because "sync now" means
+    now.
+    """
     sources = await storage.list_sources(only_enabled=True)
     if slugs:
         wanted = set(slugs)
         sources = [source for source in sources if source.slug in wanted]
 
+    considered = len(sources)
+    if only_due:
+        sources = due_sources(sources)
+
     if not sources:
-        log.warning("no sources to crawl", requested=slugs)
+        if only_due and considered:
+            log.info("no sources due", considered=considered)
+        else:
+            log.warning("no sources to crawl", requested=slugs)
         return RunResult()
 
     semaphore = asyncio.Semaphore(settings.concurrency)
+    # One budget for the whole run. Sources are concurrent and so are the pages within each
+    # of them, so without a shared ceiling the two settings multiply and Tor — not the
+    # crawler — becomes the thing deciding how fast anything goes.
+    fetch_slots = asyncio.Semaphore(settings.fetch_budget)
 
     async def guarded(source: SourceRow) -> SourceResult:
         async with semaphore:
             return await crawl_source(
-                source, storage=storage, settings=settings, extractor_name=extractor_name
+                source,
+                storage=storage,
+                settings=settings,
+                extractor_name=extractor_name,
+                fetch_slots=fetch_slots,
             )
 
-    log.info("run starting", sources=len(sources), concurrency=settings.concurrency)
+    log.info(
+        "run starting",
+        sources=len(sources),
+        skipped_not_due=considered - len(sources),
+        concurrency=settings.concurrency,
+        page_concurrency=settings.page_concurrency,
+        fetch_budget=settings.fetch_budget,
+    )
     results = await asyncio.gather(*(guarded(source) for source in sources))
 
     run = RunResult(sources=list(results))
@@ -392,6 +523,7 @@ async def run_pipeline(
         new_leaks=run.inserted,
         seen_again=run.updated,
         failed=run.failed,
+        discarded_pages=run.discarded,
         switched=[s.slug for s in run.sources if s.switched_to],
     )
     return run
@@ -403,6 +535,7 @@ async def run_pipeline_locked(
     settings: Settings,
     slugs: list[str] | None = None,
     extractor_name: str | None = None,
+    only_due: bool = False,
 ) -> RunResult | None:
     """`run_pipeline`, but only if no other crawl is in flight. None means "skipped".
 
@@ -419,4 +552,5 @@ async def run_pipeline_locked(
             settings=settings,
             slugs=slugs,
             extractor_name=extractor_name,
+            only_due=only_due,
         )

@@ -61,6 +61,16 @@ class MirrorRow:
 
 
 @dataclass(slots=True)
+class CrawlRequestRow:
+    """A crawl someone asked for through the UI, claimed by this worker."""
+
+    id: int
+    source_slug: str | None
+    requested_by: str | None
+    requested_at: datetime
+
+
+@dataclass(slots=True)
 class UpsertResult:
     inserted: int = 0
     updated: int = 0
@@ -361,6 +371,13 @@ class Storage:
                         last_seen_at = excluded.last_seen_at,
                         victim_name = coalesce(excluded.victim_name, leaks.victim_name),
                         victim_domain = coalesce(excluded.victim_domain, leaks.victim_domain),
+                        -- These two were written on insert and never refreshed, so every
+                        -- row that predates location and sector extraction would have kept
+                        -- its nulls forever however many times it was re-crawled. Coalesced
+                        -- like the rest: a later extraction can fill them in, and a sparser
+                        -- one cannot blank them.
+                        victim_country = coalesce(excluded.victim_country, leaks.victim_country),
+                        victim_sector = coalesce(excluded.victim_sector, leaks.victim_sector),
                         published_at = coalesce(excluded.published_at, leaks.published_at),
                         published_at_raw = coalesce(
                             excluded.published_at_raw, leaks.published_at_raw
@@ -716,6 +733,138 @@ class Storage:
             "with u as (update sources set active_url = null where slug = $1 returning 1) "
             "select count(*) from u",
             slug,
+        )
+
+    # ---------- on-demand crawl requests ----------
+
+    async def claim_crawl_request(self) -> CrawlRequestRow | None:
+        """Take the oldest queued request and mark it running. None means nothing waiting.
+
+        `for update skip locked` rather than a plain select-then-update: two worker ticks
+        landing in the same instant would otherwise both read the same queued row, both mark
+        it running, and both crawl the same sources. Skip-locked makes the claim itself the
+        thing that serialises them, in one statement, with no extra lock to hold.
+        """
+        row = await self._pool.fetchrow(
+            """
+            with claimed as (
+                select id from crawl_requests
+                 where status = 'queued'
+                 order by requested_at
+                 limit 1
+                 for update skip locked
+            )
+            update crawl_requests r
+               set status = 'running', started_at = now()
+              from claimed
+             where r.id = claimed.id
+            returning r.id, r.source_slug, r.requested_by, r.requested_at
+            """
+        )
+        if row is None:
+            return None
+        return CrawlRequestRow(
+            id=row["id"],
+            source_slug=row["source_slug"],
+            requested_by=row["requested_by"],
+            requested_at=row["requested_at"],
+        )
+
+    async def finish_crawl_request(
+        self,
+        request_id: int,
+        *,
+        status: str,
+        sources_crawled: int = 0,
+        new_leaks: int = 0,
+        updated_leaks: int = 0,
+        failed_sources: int = 0,
+        error: str | None = None,
+    ) -> None:
+        await self._pool.execute(
+            """
+            update crawl_requests
+               set status = $2::crawl_request_status,
+                   finished_at = now(),
+                   sources_crawled = $3,
+                   new_leaks = $4,
+                   updated_leaks = $5,
+                   failed_sources = $6,
+                   error = $7
+             where id = $1
+            """,
+            request_id,
+            status,
+            sources_crawled,
+            new_leaks,
+            updated_leaks,
+            failed_sources,
+            (error or None) and error[:1000],
+        )
+
+    async def expire_stale_crawl_requests(self, older_than_seconds: int) -> int:
+        """Fail requests left `running` by a worker that died mid-crawl.
+
+        Without this a killed worker leaves a request permanently at "running", and the UI
+        polling it shows a sync that never ends — the same class of lie as the `crawl_runs`
+        rows that used to be abandoned in 'running'.
+        """
+        return await self._pool.fetchval(
+            """
+            with expired as (
+                update crawl_requests
+                   set status = 'failed',
+                       finished_at = now(),
+                       error = 'worker stopped before this crawl finished'
+                 where status = 'running'
+                   and started_at < now() - make_interval(secs => $1::double precision)
+                returning 1
+            )
+            select count(*) from expired
+            """,
+            float(older_than_seconds),
+        )
+
+    async def expire_stale_crawl_runs(self, older_than_seconds: int) -> int:
+        """Close `crawl_runs` rows abandoned by a worker that was killed outright.
+
+        `finish_crawl` is shielded against cancellation, which covers a job timeout and a
+        graceful shutdown — but not the process vanishing. Rows left at 'running' are read
+        by the API as "collection is happening", so two of them stranded by a crash kept the
+        UI reporting an active sync a full day later.
+
+        The source's own health counters are deliberately not touched: nobody knows whether
+        that crawl was succeeding when the worker died, and guessing either way writes a
+        health signal out of thin air.
+        """
+        return await self._pool.fetchval(
+            """
+            with expired as (
+                update crawl_runs
+                   set status = 'failed',
+                       finished_at = now(),
+                       error = coalesce(error, 'worker stopped before this crawl finished')
+                 where status = 'running'
+                   and started_at < now() - make_interval(secs => $1::double precision)
+                returning 1
+            )
+            select count(*) from expired
+            """,
+            float(older_than_seconds),
+        )
+
+    async def request_crawl(
+        self, *, source_slug: str | None = None, requested_by: str | None = None
+    ) -> int:
+        """Queue a crawl. Used by the CLI; the API inserts the same row through Drizzle."""
+        return await self._pool.fetchval(
+            """
+            insert into crawl_requests (source_slug, requested_by)
+            values ($1, $2)
+            returning id
+            """,
+            source_slug,
+            requested_by,
         )
 
 

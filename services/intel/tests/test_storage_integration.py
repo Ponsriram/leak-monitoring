@@ -188,3 +188,119 @@ async def test_page_content_hash_short_circuits(storage: Storage, source_id: int
 def test_content_hash_is_stable() -> None:
     assert content_hash("abc") == content_hash("abc")
     assert content_hash("abc") != content_hash("abd")
+
+
+# ---------------------------------------------------------------- crawl requests
+
+
+@pytest.fixture
+async def clean_requests(storage: Storage):  # type: ignore[no-untyped-def]
+    """Leave `crawl_requests` as it was found.
+
+    These tests claim whatever is queued, so they must run against an empty queue and must
+    not leave rows behind for the worker to pick up on the developer's machine.
+    """
+    ids: list[int] = []
+    try:
+        yield ids
+    finally:
+        if ids:
+            await storage._pool.execute(  # noqa: SLF001
+                "delete from crawl_requests where id = any($1::bigint[])", ids
+            )
+
+
+async def test_a_queued_request_is_claimed_once(storage: Storage, clean_requests) -> None:  # type: ignore[no-untyped-def]
+    """Two ticks landing together must not both run the same crawl."""
+    request_id = await storage.request_crawl(source_slug=None, requested_by="test")
+    clean_requests.append(request_id)
+
+    # Drain, rather than assuming this row is claimed first. These run against the
+    # developer's real database, where a Sync clicked in the app minutes ago is an ordinary
+    # thing to find already queued — and a test that fails because the app was used is a
+    # test nobody trusts.
+    claimed: list[int] = []
+    while (request := await storage.claim_crawl_request()) is not None:
+        claimed.append(request.id)
+        clean_requests.append(request.id)
+        if request.id == request_id:
+            break
+
+    assert request_id in claimed
+
+    # Now marked running, so a further tick cannot hand the same crawl to a second worker —
+    # what `for update skip locked` plus the status change buys.
+    again = await storage.claim_crawl_request()
+    assert again is None or again.id != request_id
+
+
+async def test_finishing_a_request_records_what_the_crawl_did(
+    storage: Storage, clean_requests  # type: ignore[no-untyped-def]
+) -> None:
+    request_id = await storage.request_crawl(source_slug="lockbit", requested_by="test")
+    clean_requests.append(request_id)
+
+    await storage.claim_crawl_request()
+    await storage.finish_crawl_request(
+        request_id, status="succeeded", sources_crawled=1, new_leaks=7, updated_leaks=3
+    )
+
+    row = await storage._pool.fetchrow(  # noqa: SLF001
+        "select status, new_leaks, updated_leaks, finished_at from crawl_requests where id = $1",
+        request_id,
+    )
+    assert row["status"] == "succeeded"
+    assert row["new_leaks"] == 7
+    assert row["updated_leaks"] == 3
+    assert row["finished_at"] is not None
+
+
+async def test_a_request_stranded_by_a_dead_worker_is_expired(
+    storage: Storage, clean_requests  # type: ignore[no-untyped-def]
+) -> None:
+    """Otherwise the UI polls a sync that says "running" forever."""
+    request_id = await storage.request_crawl(source_slug=None, requested_by="test")
+    clean_requests.append(request_id)
+    await storage.claim_crawl_request()
+
+    # Age the claim past the timeout rather than waiting for one to elapse.
+    await storage._pool.execute(  # noqa: SLF001
+        "update crawl_requests set started_at = now() - interval '2 hours' where id = $1",
+        request_id,
+    )
+    assert await storage.expire_stale_crawl_requests(3600) >= 1
+
+    status = await storage._pool.fetchval(  # noqa: SLF001
+        "select status from crawl_requests where id = $1", request_id
+    )
+    assert status == "failed"
+
+
+async def test_a_crawl_run_stranded_by_a_dead_worker_is_closed(
+    storage: Storage, source_id: int  # type: ignore[no-untyped-def]
+) -> None:
+    """Otherwise the API reads it as "collection is happening" forever, and disables Sync."""
+    run_id = await storage.start_crawl(source_id)
+    await storage._pool.execute(  # noqa: SLF001
+        "update crawl_runs set started_at = now() - interval '2 hours' where id = $1", run_id
+    )
+
+    assert await storage.expire_stale_crawl_runs(3600) >= 1
+
+    status = await storage._pool.fetchval(  # noqa: SLF001
+        "select status from crawl_runs where id = $1", run_id
+    )
+    assert status == "failed"
+
+
+async def test_a_crawl_run_still_in_progress_is_left_alone(
+    storage: Storage, source_id: int  # type: ignore[no-untyped-def]
+) -> None:
+    run_id = await storage.start_crawl(source_id)
+    await storage.expire_stale_crawl_runs(3600)
+
+    status = await storage._pool.fetchval(  # noqa: SLF001
+        "select status from crawl_runs where id = $1", run_id
+    )
+    assert status == "running"
+    await storage._pool.execute("delete from crawl_runs where id = $1", run_id)  # noqa: SLF001

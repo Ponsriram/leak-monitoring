@@ -266,6 +266,11 @@ def run(
         None, "--source", "-s", help="Limit to these slugs (repeatable)"
     ),
     extractor: str | None = typer.Option(None, help="rules | gliner"),
+    due_only: bool = typer.Option(
+        False,
+        "--due-only",
+        help="Skip sources whose crawl_interval_seconds has not elapsed (what the scheduler does)",
+    ),
 ) -> None:
     """Crawl every enabled source, extract, and load.
 
@@ -284,6 +289,7 @@ def run(
             settings=settings,  # type: ignore[arg-type]
             slugs=list(source) if source else None,
             extractor_name=extractor,
+            only_due=due_only,
         )
 
     result = asyncio.run(_with_storage(work))
@@ -306,6 +312,13 @@ def run(
     discovered = sum(s.mirrors_found for s in result.sources)
     if discovered:
         typer.echo(f"{discovered} new onion address(es) recorded. See `intel mirrors list`.")
+    if result.discarded:
+        # Pages a doubling wave fetched past the end of a listing. A large number here means
+        # CRAWL_PAGE_CONCURRENCY is tuned well above how deep these sources actually go.
+        typer.echo(
+            f"{result.discarded} page(s) fetched past the end of a listing and discarded. "
+            f"Lower CRAWL_PAGE_CONCURRENCY if that number is large."
+        )
     if result.failed:
         typer.echo(f"Failed: {', '.join(result.failed)}", err=True)
 

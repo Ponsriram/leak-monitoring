@@ -62,6 +62,19 @@ class Settings(BaseSettings):
     # sources at ~20s per page took many hours per cycle.
     concurrency: int = Field(default=4, alias="CRAWL_CONCURRENCY")
 
+    # How many pages of ONE source may be in flight together. Pages used to be walked
+    # strictly in order, so a ten-page listing cost ten sequential Tor round trips whatever
+    # the cross-source concurrency was. See `intel.scheduling.page_waves`.
+    page_concurrency: int = Field(default=4, alias="CRAWL_PAGE_CONCURRENCY")
+    # Ceiling on how large a single wave of simultaneous requests to one site may grow.
+    page_wave_cap: int = Field(default=16, alias="CRAWL_PAGE_WAVE_CAP")
+
+    # Total fetches in flight across every source, whatever `concurrency` and
+    # `page_concurrency` multiply out to. Without this the two settings compose
+    # multiplicatively (4 sources x 16-page waves = 64 simultaneous circuits) and Tor
+    # becomes the bottleneck for every one of them. 0 means "derive it".
+    max_inflight_fetches: int = Field(default=0, alias="CRAWL_MAX_INFLIGHT")
+
     # How long a full scheduled run may take. The default was arq's 300s, which is far less
     # than the ~15 minutes 32 sources need, so every scheduled crawl was killed mid-run and
     # the system only ever collected anything when someone ran the CLI by hand.
@@ -82,6 +95,20 @@ class Settings(BaseSettings):
     sources_file: Path = Field(default=SERVICE_ROOT / "sources.yaml", alias="INTEL_SOURCES")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    @property
+    def fetch_budget(self) -> int:
+        """Hard ceiling on simultaneous fetches across the whole run.
+
+        Derived rather than required, because the useful value is a function of the other
+        two settings and nobody should have to keep three numbers consistent by hand. The
+        derived value is deliberately smaller than `concurrency * page_concurrency`: not
+        every source is mid-wave at the same moment, so budgeting for the worst case just
+        means the budget never binds and Tor takes the overload instead.
+        """
+        if self.max_inflight_fetches > 0:
+            return self.max_inflight_fetches
+        return max(self.concurrency, self.concurrency + self.page_concurrency)
 
     @property
     def asyncpg_dsn(self) -> str:

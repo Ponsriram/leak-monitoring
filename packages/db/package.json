@@ -22,7 +22,7 @@
     "migrate": "tsx src/migrate.ts",
     "push": "drizzle-kit push",
     "studio": "drizzle-kit studio",
-    "seed": "tsx src/seed.ts",
+    "fixture:ci": "tsx test/fixture-seed.ts",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {

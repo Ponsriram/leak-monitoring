@@ -14,6 +14,7 @@ import authPlugin from "./plugins/auth.js";
 import dbPlugin from "./plugins/db.js";
 import errorHandler from "./plugins/error-handler.js";
 import { alertRoutes } from "./routes/alerts.js";
+import { crawlRoutes } from "./routes/crawl.js";
 import { healthRoutes } from "./routes/health.js";
 import { leakRoutes } from "./routes/leaks.js";
 import { sourceRoutes } from "./routes/sources.js";
@@ -87,6 +88,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(statsRoutes);
   await app.register(sourceRoutes);
   await app.register(alertRoutes);
+  await app.register(crawlRoutes);
 
   return app;
 }

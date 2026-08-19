@@ -18,6 +18,14 @@ const listQuery = z.object({
     .optional(),
   sourceId: z.coerce.number().int().positive().optional(),
 
+  /**
+   * The NER tags. Both are canonical values written by the extractor — "Germany", not
+   * "german" — so an exact match is right and a LIKE would only invite partial matches
+   * across countries that share a prefix.
+   */
+  country: z.string().min(1).max(100).optional(),
+  sector: z.string().min(1).max(100).optional(),
+
   /** Free-text search over victim name and domain, served by the GIN index. */
   q: z.string().min(1).max(200).optional(),
 
@@ -76,13 +84,15 @@ export const leakRoutes: FastifyPluginAsyncZod = async (fastify) => {
       },
     },
     async (request) => {
-      const { page, limit, group, status, sourceId, q, from, to, sort, order } =
+      const { page, limit, group, status, sourceId, country, sector, q, from, to, sort, order } =
         request.query;
 
       const conditions: SQL[] = [];
       if (group) conditions.push(eq(leaks.actorGroup, group));
       if (status) conditions.push(eq(leaks.status, status));
       if (sourceId) conditions.push(eq(leaks.sourceId, sourceId));
+      if (country) conditions.push(eq(leaks.victimCountry, country));
+      if (sector) conditions.push(eq(leaks.victimSector, sector));
       if (from) conditions.push(gte(leaks.firstSeenAt, from));
       if (to) conditions.push(lte(leaks.firstSeenAt, to));
       if (q) {

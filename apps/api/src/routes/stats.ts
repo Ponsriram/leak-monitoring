@@ -1,5 +1,5 @@
 import { alertEvents, leaks, sources } from "@leak/db";
-import { count, gte, sql } from "drizzle-orm";
+import { count, gte, isNotNull, sql } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { requireAuth } from "../plugins/auth.js";
@@ -98,6 +98,51 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
         : await query;
 
       return { data: rows };
+    },
+  );
+
+  /**
+   * The NER tag facets, used to build the Leaks page's Country and Sector filters.
+   *
+   * One endpoint for both, because they answer the same question about two columns and the
+   * shape of the response is identical — the alternative was two near-copies of the same
+   * handler. Nulls are excluded rather than bucketed as "unknown": these columns are null
+   * whenever a listing named no country and its domain carried no ccTLD, which is a large
+   * share of rows, and a filter option that means "we could not tell" is not a filter.
+   */
+  fastify.get(
+    "/api/stats/leaks-per-tag",
+    {
+      schema: {
+        description: "Leak counts per extracted country or sector, most common first.",
+        tags: ["stats"],
+        querystring: z.object({
+          tag: z.enum(["country", "sector"]),
+          limit: z.coerce.number().int().min(1).max(100).default(30),
+        }),
+        response: {
+          200: z.object({
+            tag: z.enum(["country", "sector"]),
+            data: z.array(z.object({ value: z.string(), total: z.number() })),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const { tag, limit } = request.query;
+      const column = tag === "country" ? leaks.victimCountry : leaks.victimSector;
+
+      const rows = await fastify.db
+        .select({ value: column, total: count() })
+        .from(leaks)
+        .where(isNotNull(column))
+        .groupBy(column)
+        .orderBy(sql`count(*) desc`)
+        .limit(limit);
+
+      // `isNotNull` already excludes them, so the cast is narrowing a type the query has
+      // already guaranteed rather than papering over a possible null.
+      return { tag, data: rows as { value: string; total: number }[] };
     },
   );
 

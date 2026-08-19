@@ -87,8 +87,12 @@ jobs:
       - name: Apply migrations
         run: npm run db:migrate
 
-      - name: Seed
-        run: npm run db:seed
+      # CI only. This writes invented victims, and refuses to run against a database that
+      # holds any collected leak — see packages/db/test/fixture-seed.ts. The smoke test
+      # below asserts exact counts, so it needs a known fixture and CI is the only place
+      # one may exist.
+      - name: Seed the CI fixture
+        run: npm run fixture:ci -w @leak/db
 
       - name: Start API
         run: |

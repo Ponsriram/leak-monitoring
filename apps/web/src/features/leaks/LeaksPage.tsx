@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
 import { LeakStatusChip } from "../../components/StatusChip";
+import { TagChip } from "../../components/TagChip";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/states";
 import { formatBytes, formatDate, formatNumber, formatRelative } from "../../lib/format";
-import { useLeaksPerGroup, useLeaks, type LeakFilters } from "../../lib/queries";
+import {
+  useLeaksPerGroup,
+  useLeaksPerTag,
+  useLeaks,
+  type LeakFilters,
+} from "../../lib/queries";
+import { LatestArrivals } from "./LatestArrivals";
+import { SyncButton } from "./SyncButton";
 
 const PAGE_SIZE = 25;
 
@@ -18,6 +26,8 @@ export function LeaksPage() {
   const [debounced, setDebounced] = useState("");
   const [group, setGroup] = useState("");
   const [status, setStatus] = useState("");
+  const [country, setCountry] = useState("");
+  const [sector, setSector] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<LeakFilters["sort"]>("first_seen_at");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
@@ -39,10 +49,14 @@ export function LeaksPage() {
     ...(debounced ? { q: debounced } : {}),
     ...(group ? { group } : {}),
     ...(status ? { status } : {}),
+    ...(country ? { country } : {}),
+    ...(sector ? { sector } : {}),
   };
 
   const query = useLeaks(filters);
   const groups = useLeaksPerGroup(50);
+  const countries = useLeaksPerTag("country");
+  const sectors = useLeaksPerTag("sector");
 
   function toggleSort(column: NonNullable<LeakFilters["sort"]>) {
     if (sort === column) {
@@ -56,6 +70,7 @@ export function LeaksPage() {
 
   const pagination = query.data?.pagination;
   const rows = query.data?.data ?? [];
+  const hasFilters = Boolean(search || group || status || country || sector);
 
   return (
     <div className="page">
@@ -68,7 +83,15 @@ export function LeaksPage() {
               : "Every recorded victim listing."}
           </p>
         </div>
+        {/*
+          The sync control sits with the page title rather than inside the table card,
+          because it does not refresh the table — it asks the collection worker to go and
+          fetch the sources, which affects every view in the app.
+        */}
+        <SyncButton />
       </div>
+
+      <LatestArrivals />
 
       <section className="card">
         <div className="card-head">
@@ -115,7 +138,45 @@ export function LeaksPage() {
               <option value="unknown">unknown</option>
             </select>
 
-            {(search || group || status) && (
+            {/*
+              The counts are in the option labels on purpose. These values are extracted, not
+              declared by the source, so most rows carry neither — and a filter that silently
+              returns three results out of nine hundred reads as a broken filter unless the
+              dropdown already said there were three.
+            */}
+            <select
+              value={country}
+              onChange={(e) => {
+                setCountry(e.target.value);
+                setPage(1);
+              }}
+              aria-label="Filter by location"
+            >
+              <option value="">Any location</option>
+              {countries.data?.data.map((row) => (
+                <option key={row.value} value={row.value}>
+                  {row.value} ({row.total})
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={sector}
+              onChange={(e) => {
+                setSector(e.target.value);
+                setPage(1);
+              }}
+              aria-label="Filter by sector"
+            >
+              <option value="">Any sector</option>
+              {sectors.data?.data.map((row) => (
+                <option key={row.value} value={row.value}>
+                  {row.value} ({row.total})
+                </option>
+              ))}
+            </select>
+
+            {hasFilters && (
               <button
                 type="button"
                 className="btn btn-sm"
@@ -123,6 +184,8 @@ export function LeaksPage() {
                   setSearch("");
                   setGroup("");
                   setStatus("");
+                  setCountry("");
+                  setSector("");
                   setPage(1);
                 }}
               >
@@ -137,7 +200,7 @@ export function LeaksPage() {
         </div>
 
         {query.isPending ? (
-          <TableSkeleton rows={8} cols={7} />
+          <TableSkeleton rows={8} cols={8} />
         ) : query.isError ? (
           <ErrorState error={query.error} onRetry={query.refetch} />
         ) : rows.length === 0 ? (
@@ -164,6 +227,13 @@ export function LeaksPage() {
                       Victim {sort === "victim_name" && (order === "asc" ? "▲" : "▼")}
                     </th>
                     <th>Group</th>
+                    {/*
+                      Location and sector in one column. They are the two tags the extractor
+                      infers rather than reads, they are null together far more often than
+                      not, and two mostly-empty columns cost more table width than they
+                      return.
+                    */}
+                    <th title="Location and industry, inferred by the extractor">Tags</th>
                     <th>Status</th>
                     <th>Size</th>
                     <th
@@ -215,6 +285,19 @@ export function LeaksPage() {
                         )}
                       </td>
                       <td className="mono">{leak.actorGroup}</td>
+                      <td>
+                        <div className="tag-cell">
+                          {leak.victimCountry && (
+                            <TagChip kind="country" value={leak.victimCountry} />
+                          )}
+                          {leak.victimSector && (
+                            <TagChip kind="sector" value={leak.victimSector} />
+                          )}
+                          {!leak.victimCountry && !leak.victimSector && (
+                            <span style={{ color: "var(--muted)" }}>—</span>
+                          )}
+                        </div>
+                      </td>
                       <td>
                         <LeakStatusChip status={leak.status} />
                       </td>

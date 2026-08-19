@@ -43,9 +43,35 @@ export type LeakFilters = {
   limit: number;
   group?: string;
   status?: string;
+  /** Extracted NER tags. Canonical values, e.g. "Germany" and "Healthcare". */
+  country?: string;
+  sector?: string;
   q?: string;
   sort?: string;
   order?: "asc" | "desc";
+};
+
+/** One facet of the tag filters: a country or sector and how many leaks carry it. */
+export type TagFacet = { value: string; total: number };
+
+export type CrawlRequest = {
+  id: number;
+  sourceSlug: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "skipped";
+  requestedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  sourcesCrawled: number;
+  newLeaks: number;
+  updatedLeaks: number;
+  failedSources: number;
+  error: string | null;
+};
+
+export type CrawlStatus = {
+  latest: CrawlRequest | null;
+  running: boolean;
+  queued: number;
 };
 
 export type SourceRow = {
@@ -109,6 +135,8 @@ export const keys = {
   summary: () => ["stats", "summary"] as const,
   perDay: (days: number) => ["stats", "per-day", days] as const,
   perGroup: (limit: number) => ["stats", "per-group", limit] as const,
+  perTag: (tag: "country" | "sector") => ["stats", "per-tag", tag] as const,
+  crawlStatus: () => ["crawl", "status"] as const,
   alerts: () => ["alerts"] as const,
   alertEvents: () => ["alert-events"] as const,
 };
@@ -158,6 +186,60 @@ export function useLeaksPerGroup(limit = 8) {
         `/api/stats/leaks-per-group${qs({ limit })}`,
       ),
     refetchInterval: LIVE_REFETCH,
+  });
+}
+
+export function useLeaksPerTag(tag: "country" | "sector") {
+  return useQuery({
+    queryKey: keys.perTag(tag),
+    queryFn: () =>
+      apiFetch<{ tag: string; data: TagFacet[] }>(`/api/stats/leaks-per-tag${qs({ tag })}`),
+    // These populate dropdowns rather than a live number, so they can be much staler than
+    // the dashboard tiles. Refetching them every minute would be one query per minute for a
+    // list that changes when a new country first appears in the data.
+    staleTime: 5 * 60_000,
+  });
+}
+
+// --- collection ---
+
+/**
+ * The state of collection: whether a crawl is running and what the last one did.
+ *
+ * `refetchInterval` is a function rather than a number so an idle console is not polling
+ * every two seconds forever. While something is queued or running this is a progress bar
+ * and wants to be quick; once it settles, the slow interval is enough to notice the
+ * scheduled sweep starting.
+ */
+export function useCrawlStatus() {
+  return useQuery({
+    queryKey: keys.crawlStatus(),
+    queryFn: () => apiFetch<CrawlStatus>("/api/crawl/status"),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      const busy = data?.running || data?.latest?.status === "queued";
+      return busy ? 2_000 : 30_000;
+    },
+  });
+}
+
+/**
+ * Ask the worker for a crawl.
+ *
+ * On success everything derived from leak data is invalidated rather than just the leaks
+ * list: a crawl that adds rows also moves the dashboard's counts, the per-group chart and
+ * the tag facets, and leaving those showing pre-sync numbers next to a freshly synced table
+ * is the kind of inconsistency that makes a console untrustworthy.
+ */
+export function useRequestCrawl() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceSlug?: string) =>
+      apiFetch<{ request: CrawlRequest; created: boolean }>("/api/crawl", {
+        method: "POST",
+        body: JSON.stringify(sourceSlug ? { sourceSlug } : {}),
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.crawlStatus() }),
   });
 }
 

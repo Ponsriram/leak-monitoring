@@ -33,7 +33,7 @@ export const auth = betterAuth({
     // No public sign-up flow for a threat-intel console — accounts are provisioned.
     // Flip this to false once you add an invite flow; leaving it true is what lets you
     // create the first account.
-    disableSignUp: false,
+    disableSignUp: true,
     minPasswordLength: 12,
     requireEmailVerification: false,
   },

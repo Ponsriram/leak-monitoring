@@ -16,9 +16,13 @@ import errorHandler from "./plugins/error-handler.js";
 import { alertRoutes } from "./routes/alerts.js";
 import { crawlRoutes } from "./routes/crawl.js";
 import { healthRoutes } from "./routes/health.js";
+import { incidentRoutes } from "./routes/incidents.js";
+import { iocRoutes } from "./routes/iocs.js";
 import { leakRoutes } from "./routes/leaks.js";
+import { searchRoutes } from "./routes/search.js";
 import { sourceRoutes } from "./routes/sources.js";
 import { statsRoutes } from "./routes/stats.js";
+import { streamRoutes } from "./routes/stream.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -89,6 +93,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sourceRoutes);
   await app.register(alertRoutes);
   await app.register(crawlRoutes);
+  await app.register(incidentRoutes);
+  await app.register(iocRoutes);
+  await app.register(searchRoutes);
+  await app.register(streamRoutes);
 
   return app;
 }

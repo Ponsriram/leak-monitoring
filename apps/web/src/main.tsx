@@ -9,6 +9,10 @@ import { AlertsPage } from "./features/alerts/AlertsPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { LeaksPage } from "./features/leaks/LeaksPage";
+import { IncidentsPage } from "./features/incidents/IncidentsPage";
+import { IocPage } from "./features/iocs/IocPage";
+import { LiveMapPage } from "./features/map/LiveMapPage";
+import { SearchPage } from "./features/search/SearchPage";
 import { SourcesPage } from "./features/sources/SourcesPage";
 import "./styles/app.css";
 
@@ -44,6 +48,12 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardPage /> },
       { path: "leaks", element: <LeaksPage /> },
+      { path: "search", element: <SearchPage /> },
+      { path: "general", element: <IncidentsPage section="general" /> },
+      { path: "ransomware", element: <IncidentsPage section="ransomware" /> },
+      { path: "darkweb", element: <IncidentsPage section="darkweb" /> },
+      { path: "iocs", element: <IocPage /> },
+      { path: "map", element: <LiveMapPage /> },
       { path: "sources", element: <SourcesPage /> },
       { path: "alerts", element: <AlertsPage /> },
     ],

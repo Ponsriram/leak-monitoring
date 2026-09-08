@@ -29,6 +29,14 @@ const listQuery = z.object({
   sector: z.string().min(1).max(100).optional(),
   status: z.string().min(1).max(30).optional(),
   siteStatus: z.enum(["live", "down", "error", "not_scanned"]).optional(),
+  /**
+   * `leak_type`, free text rather than an enum.
+   *
+   * The column is a plain text column with a default, not a pgEnum — a closed list here
+   * would reject a classification the pipeline had already written to the row, and the
+   * filter would silently return nothing for it.
+   */
+  type: z.string().min(1).max(40).optional(),
   q: z.string().min(1).max(200).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
@@ -107,6 +115,7 @@ function buildConditions(filters: Filters, extra: SQL[] = []): SQL | undefined {
   if (filters.country) conditions.push(eq(leaks.victimCountry, filters.country));
   if (filters.sector) conditions.push(eq(leaks.victimSector, filters.sector));
   if (filters.status) conditions.push(sql`${leaks.status}::text = ${filters.status}`);
+  if (filters.type) conditions.push(eq(leaks.leakType, filters.type));
   if (filters.siteStatus) conditions.push(sql`${domainEnrichment.status}::text = ${filters.siteStatus}`);
   if (filters.from) conditions.push(gte(leaks.firstSeenAt, filters.from));
   if (filters.to) conditions.push(lte(leaks.firstSeenAt, filters.to));

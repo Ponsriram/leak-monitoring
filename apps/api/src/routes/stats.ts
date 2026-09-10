@@ -114,15 +114,16 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     "/api/stats/leaks-per-tag",
     {
       schema: {
-        description: "Leak counts per extracted country or sector, most common first.",
+        description:
+          "Leak counts per extracted country or sector, or per incident type, most common first.",
         tags: ["stats"],
         querystring: z.object({
-          tag: z.enum(["country", "sector"]),
+          tag: z.enum(["country", "sector", "type"]),
           limit: z.coerce.number().int().min(1).max(100).default(30),
         }),
         response: {
           200: z.object({
-            tag: z.enum(["country", "sector"]),
+            tag: z.enum(["country", "sector", "type"]),
             data: z.array(z.object({ value: z.string(), total: z.number() })),
           }),
         },
@@ -130,7 +131,14 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     },
     async (request) => {
       const { tag, limit } = request.query;
-      const column = tag === "country" ? leaks.victimCountry : leaks.victimSector;
+      // `type` is the only one of the three that is NOT NULL, so the isNotNull below is a
+      // no-op for it rather than a filter — the facet returns every distinct value.
+      const column =
+        tag === "country"
+          ? leaks.victimCountry
+          : tag === "sector"
+            ? leaks.victimSector
+            : leaks.leakType;
 
       const rows = await fastify.db
         .select({ value: column, total: count() })

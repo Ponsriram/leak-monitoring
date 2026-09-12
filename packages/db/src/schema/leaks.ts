@@ -131,6 +131,28 @@ export const leaks = pgTable(
       "gin",
       sql`to_tsvector('english', coalesce(${t.victimName}, '') || ' ' || coalesce(${t.victimDomain}, ''))`,
     ),
+
+    /**
+     * Substring search over the same two columns.
+     *
+     * The full-text index above matches whole words, which is the wrong tool for the way
+     * analysts actually type a company: `to_tsvector` tokenizes "The Frame Group" into three
+     * lexemes, so a search for "framegroup" — or for the half-typed "framegro" — matches
+     * nothing at all, and neither does a search for the domain when the listing only named
+     * the company. Trigrams cover exactly that gap, and cover it in both directions, so the
+     * two indexes together answer word queries and fragment queries without either one
+     * degrading to a sequential scan.
+     *
+     * Partial, on the same reasoning as the country and sector indexes: a listing with no
+     * name and no domain can never be returned by a substring search, and those rows are a
+     * large share of the table.
+     */
+    index("leaks_victim_name_trgm_idx")
+      .using("gin", sql`${t.victimName} gin_trgm_ops`)
+      .where(sql`${t.victimName} is not null`),
+    index("leaks_victim_domain_trgm_idx")
+      .using("gin", sql`${t.victimDomain} gin_trgm_ops`)
+      .where(sql`${t.victimDomain} is not null`),
   ],
 );
 

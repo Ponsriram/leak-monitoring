@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   index,
@@ -17,6 +18,17 @@ export const crawlStatus = pgEnum("crawl_status", [
 ]);
 
 /**
+ * How much of a listing a crawl looked at.
+ *
+ * Recorded because the two are not comparable and averaging them together makes both
+ * numbers meaningless: a shallow probe is one page and a couple of seconds, a deep walk is
+ * the whole listing. Without this column "how long does a crawl take?" has no answer, and
+ * neither does "is the probe actually finding things?" — which is the question that decides
+ * whether the split was worth making.
+ */
+export const crawlDepth = pgEnum("crawl_depth", ["shallow", "deep"]);
+
+/**
  * One row per crawl attempt. This is the provenance the old system had none of —
  * "which site did this leak come from, and when did we last successfully reach it?"
  */
@@ -30,6 +42,7 @@ export const crawlRuns = pgTable(
       .references(() => sources.id, { onDelete: "cascade" }),
 
     status: crawlStatus("status").notNull().default("running"),
+    depth: crawlDepth("depth").notNull().default("deep"),
 
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -80,6 +93,21 @@ export const rawPages = pgTable(
     // The retention job's scan, and the extraction worker's backlog query.
     index("raw_pages_fetched_at_idx").on(t.fetchedAt),
     index("raw_pages_pending_extract_idx").on(t.extractedAt),
+
+    /**
+     * Full-text over the crawled corpus itself.
+     *
+     * Extraction is lossy by construction — the linker only emits a leak when it recognises
+     * the wording around a victim — so a company can be named on a page we successfully
+     * fetched and still appear nowhere in `leaks`. This index is what lets a hunt search the
+     * text we already hold and report "mentioned on this page, never extracted", which is
+     * the one finding no external service can produce for us.
+     *
+     * An expression index rather than a stored column: the corpus is large and mostly cold,
+     * and materializing a tsvector per page would grow the table by roughly the size of the
+     * text for a query path that runs a few times a minute at most.
+     */
+    index("raw_pages_text_fts_idx").using("gin", sql`to_tsvector('english', ${t.text})`),
   ],
 );
 

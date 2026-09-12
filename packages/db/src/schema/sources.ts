@@ -51,6 +51,22 @@ export const sources = pgTable(
 
     /** Per-source cadence, so a fast-moving leak site isn't throttled by a dead one. */
     crawlIntervalSeconds: integer("crawl_interval_seconds").notNull().default(3600),
+
+    /**
+     * How often the *whole* listing is walked, as opposed to just its first page.
+     *
+     * New victims are appended to the front of a leak-site listing, so page 1 answers "is
+     * there anything new?" on its own. Walking all ten pages to learn that costs ten Tor
+     * round trips at twenty to thirty seconds each, and the content hash then short-circuits
+     * nine of them — the fetches still happened, they just produced nothing.
+     *
+     * So the frequent crawl is a page-1 probe and the full walk runs on this much slower
+     * cadence. Deep walks still matter: they catch edits to older listings, and they recover
+     * anything a failed crawl missed further down.
+     */
+    deepCrawlIntervalSeconds: integer("deep_crawl_interval_seconds").notNull().default(21600),
+    /** When the last full walk finished. Null means one has never run — so one is due. */
+    lastDeepCrawlAt: timestamp("last_deep_crawl_at", { withTimezone: true }),
     /** Politeness delay between page fetches within one crawl. */
     requestDelaySeconds: integer("request_delay_seconds").notNull().default(10),
 

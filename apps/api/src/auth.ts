@@ -30,9 +30,13 @@ export const auth = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // No public sign-up flow for a threat-intel console — accounts are provisioned.
-    // Flip this to false once you add an invite flow; leaving it true is what lets you
-    // create the first account.
+    // No public sign-up flow for a threat-intel console — accounts are provisioned with
+    // `npm run user:provision -w @leak/api`, which is also how the first account is made.
+    //
+    // The comment that stood here said the opposite of the value beneath it ("leaving it
+    // true is what lets you create the first account"), which was written when this field
+    // was the inverted `enableSignUp` and never updated. With no provisioning path in the
+    // repo at the time, a fresh deployment had a login form and no way to get past it.
     disableSignUp: true,
     minPasswordLength: 12,
     requireEmailVerification: false,

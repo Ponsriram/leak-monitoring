@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -22,7 +23,13 @@ import * as schema from "../src/schema/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const client = new PGlite();
+/**
+ * `pg_trgm` has to be handed to PGlite explicitly — a plain `new PGlite()` has no contrib
+ * modules loaded, so migration 0005's `CREATE EXTENSION` fails and every test below dies at
+ * import time. A stock Postgres server already has the module on disk, which is why this is
+ * a test-harness concern and not a deployment one.
+ */
+const client = new PGlite({ extensions: { pg_trgm } });
 const db = drizzle(client, { schema });
 
 await migrate(db, { migrationsFolder: path.resolve(here, "../migrations") });
@@ -286,5 +293,137 @@ describe("victim full-text search", () => {
 
     assert.equal(result.rows.length, 1);
     assert.equal(result.rows[0]!.victim_name, "Northwind Logistics");
+  });
+});
+
+/**
+ * The reason migration 0005 adds trigram indexes alongside the full-text one.
+ *
+ * These two tests are a matched pair: the first shows the gap, the second shows it closed.
+ * Without the first, the trigram index looks like belt-and-braces duplication of the GIN
+ * full-text index and someone will eventually delete it.
+ */
+describe("victim substring search", () => {
+  it("full-text search cannot match a fragment or a run-together name", async () => {
+    const source = await makeSource("trgm-gap");
+    await db.insert(schema.leaks).values({
+      dedupeHash: "hash-trgm-gap",
+      actorGroup: "qilin",
+      victimName: "The Frame Group",
+      victimDomain: "framegroup.example",
+      sourceId: source.id,
+    });
+
+    // `to_tsvector` splits "The Frame Group" into the lexemes frame + group. Neither the
+    // run-together spelling nor a half-typed word is one of them, so both miss entirely.
+    for (const term of ["framegroup", "framegro"]) {
+      const result = await db.execute<{ victim_name: string }>(sql`
+        select victim_name from leaks
+        where to_tsvector('english', coalesce(victim_name, ''))
+              @@ plainto_tsquery('english', ${term})
+      `);
+      assert.equal(result.rows.length, 0, `expected full-text to miss "${term}"`);
+    }
+  });
+
+  it("trigram search matches both", async () => {
+    const source = await makeSource("trgm-hit");
+    await db.insert(schema.leaks).values({
+      dedupeHash: "hash-trgm-hit",
+      actorGroup: "qilin",
+      victimName: "The Frame Group",
+      victimDomain: "framegroup.example",
+      sourceId: source.id,
+    });
+
+    // ILIKE is what the search endpoint issues; `gin_trgm_ops` is what makes it indexed
+    // rather than a sequential scan. Both spellings now land.
+    for (const term of ["framegroup", "framegro", "rame Gro"]) {
+      const result = await db.execute<{ victim_name: string }>(sql`
+        select victim_name from leaks
+        where (victim_name ilike ${"%" + term + "%"} or victim_domain ilike ${"%" + term + "%"})
+          and dedupe_hash = 'hash-trgm-hit'
+      `);
+      assert.equal(result.rows.length, 1, `expected trigram search to find "${term}"`);
+    }
+  });
+});
+
+describe("search_documents", () => {
+  it("generates tsv on write and ranks a title match above a body match", async () => {
+    await db.insert(schema.searchDocuments).values([
+      {
+        entityType: "leak",
+        entityId: "1",
+        title: "Contoso Manufacturing",
+        subtitle: "lockbit",
+        body: "Germany Manufacturing published",
+      },
+      {
+        entityType: "leak",
+        entityId: "2",
+        title: "Northwind Logistics",
+        subtitle: "qilin",
+        // The word only appears in the body, which carries the lowest weight.
+        body: "supplier to Contoso, France",
+      },
+    ]);
+
+    const result = await db.execute<{ entity_id: string; rank: number }>(sql`
+      select entity_id, ts_rank(tsv, plainto_tsquery('english', 'contoso')) as rank
+      from search_documents
+      where tsv @@ plainto_tsquery('english', 'contoso')
+      order by rank desc
+    `);
+
+    assert.equal(result.rows.length, 2);
+    // Weight A (title) must outrank weight C (body) — otherwise the company you searched
+    // for comes back below every document that merely mentions it.
+    assert.equal(result.rows[0]!.entity_id, "1");
+  });
+
+  it("rejects two documents for the same entity", async () => {
+    await db
+      .insert(schema.searchDocuments)
+      .values({ entityType: "domain", entityId: "example.com", title: "example.com" });
+
+    await assert.rejects(
+      db
+        .insert(schema.searchDocuments)
+        .values({ entityType: "domain", entityId: "example.com", title: "example.com" }),
+      pgError(/duplicate key value/),
+    );
+  });
+});
+
+describe("hunt jobs", () => {
+  it("deletes findings with the job", async () => {
+    const [job] = await db
+      .insert(schema.huntJobs)
+      .values({ query: "Contoso", normalizedQuery: "contoso" })
+      .returning();
+
+    await db.insert(schema.huntFindings).values({
+      jobId: job!.id,
+      kind: "registration",
+      title: "Registrar: Example Registrar LLC",
+      sourceLabel: "RDAP",
+    });
+
+    await db.delete(schema.huntJobs).where(eq(schema.huntJobs.id, job!.id));
+
+    const left = await db.execute<{ count: number }>(
+      sql`select count(*)::int as count from hunt_findings where job_id = ${job!.id}`,
+    );
+    assert.equal(left.rows[0]!.count, 0);
+  });
+
+  it("defaults a new job to queued", async () => {
+    const [job] = await db
+      .insert(schema.huntJobs)
+      .values({ query: "Northwind", normalizedQuery: "northwind" })
+      .returning();
+    assert.equal(job!.status, "queued");
+    assert.equal(job!.findingsCount, 0);
   });
 });

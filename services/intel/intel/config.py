@@ -80,6 +80,39 @@ class Settings(BaseSettings):
     # the system only ever collected anything when someone ran the CLI by hand.
     job_timeout_seconds: int = Field(default=3600, alias="CRAWL_JOB_TIMEOUT")
 
+    # --- hunts ---
+    # How long a company search may run before it is treated as abandoned. Far shorter than
+    # a crawl's hour: a hunt is four HTTPS lookups with their own timeouts, so anything past
+    # this is a dead worker, not a slow registry.
+    hunt_timeout_seconds: int = Field(default=120, alias="HUNT_TIMEOUT")
+
+    # How long a finished hunt answers for the same query before it is re-run. An hour is a
+    # compromise between showing an analyst something current and hammering other people's
+    # registries every time someone retypes a company name.
+    hunt_cache_seconds: int = Field(default=3600, alias="HUNT_CACHE_TTL")
+
+    # --- background enrichment sweep ---
+    # How many domains one tick enriches. Small on purpose: the sweep fills a backlog over
+    # hours, and finishing it quickly would mean a burst of outbound requests that looks
+    # exactly like a scan to everyone on the receiving end.
+    enrich_batch_size: int = Field(default=12, alias="ENRICH_BATCH")
+    # Simultaneous third-party servers. The whole politeness budget of the sweep.
+    enrich_concurrency: int = Field(default=4, alias="ENRICH_CONCURRENCY")
+    # How long an enrichment row stays usable before the sweep refreshes it. A day: WHOIS
+    # barely moves, and site status is the only genuinely volatile field.
+    enrich_max_age_seconds: int = Field(default=86400, alias="ENRICH_MAX_AGE")
+
+    # --- indicator feeds ---
+    # Whether to fetch public IOC feeds at all. Off is a legitimate posture: it is outbound
+    # traffic to third parties on a timer, and some deployments would rather not.
+    feeds_enabled: bool = Field(default=True, alias="FEEDS_ENABLED")
+    # Indicators taken per feed per run. These dumps hold weeks of history; ingesting all of
+    # it on the first run would stamp thousands of old indicators as arriving at once.
+    feeds_max_entries: int = Field(default=4000, alias="FEEDS_MAX_ENTRIES")
+
+
+
+
     # --- mirror discovery ---
     # Record onion addresses mentioned on crawled pages. Recording is always safe; it is
     # only ever data until something acts on it.

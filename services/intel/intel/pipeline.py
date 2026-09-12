@@ -88,6 +88,7 @@ async def crawl_source(
     settings: Settings,
     extractor_name: str | None = None,
     fetch_slots: asyncio.Semaphore | None = None,
+    depth: str | None = None,
 ) -> SourceResult:
     """Crawl one source end to end. Never raises — failures are recorded, not propagated.
 
@@ -102,7 +103,15 @@ async def crawl_source(
     `run_pipeline` builds so pages and sources share a ceiling instead of multiplying.
     """
     result = SourceResult(slug=source.slug)
-    run_id = await storage.start_crawl(source.id)
+
+    # `depth` is normally decided by the source's own deep-walk schedule. An explicit value
+    # is how the CLI forces a full walk on demand.
+    crawl_kind = depth or crawl_depth_for(source)
+    # A shallow probe is page 1 and nothing else — `page_waves` already yields page 1 alone
+    # in its first wave, so capping the page count is the whole implementation.
+    effective_max_pages = 1 if crawl_kind == "shallow" else source.max_pages
+
+    run_id = await storage.start_crawl(source.id, depth=crawl_kind)
 
     collector = get_collector(
         source.collector,
@@ -226,7 +235,7 @@ async def crawl_source(
         return True
 
     try:
-        waves = page_waves(source.max_pages, width=width, cap=settings.page_wave_cap)
+        waves = page_waves(effective_max_pages, width=width, cap=settings.page_wave_cap)
         # Page 1 is fetched on its own, ahead of any speculation. It decides whether the
         # source is reachable, whether to fail over to a mirror, and whether what came back
         # is a listing at all — and a failover changes the address every other page would
@@ -304,6 +313,7 @@ async def crawl_source(
                 run_id,
                 source.id,
                 status=result.status,
+                depth=crawl_kind,
                 pages_fetched=result.pages_fetched,
                 pages_changed=result.pages_changed,
                 bytes_fetched=result.bytes_fetched,
@@ -426,6 +436,23 @@ def extract_page(
         page_no=page_no,
         method=extractor_name,
     )
+
+
+def crawl_depth_for(source: SourceRow, *, now: datetime | None = None) -> str:
+    """Whether this crawl should walk the whole listing or just probe page 1.
+
+    Leak sites append new victims to the front of their listing, so page 1 is where anything
+    new appears. A full walk exists to catch what page 1 cannot: edits to older entries, and
+    pages missed by a crawl that failed partway down.
+
+    A source that has never had a deep walk gets one — the first crawl must see the whole
+    backlog, or the "new since yesterday" baseline is built from one page of a ten-page site.
+    """
+    if source.last_deep_crawl_at is None:
+        return "deep"
+    moment = now or datetime.now(UTC)
+    elapsed = (moment - source.last_deep_crawl_at).total_seconds()
+    return "deep" if elapsed >= source.deep_crawl_interval_seconds else "shallow"
 
 
 def due_sources(sources: list[SourceRow], *, now: datetime | None = None) -> list[SourceRow]:

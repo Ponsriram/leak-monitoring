@@ -21,6 +21,10 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from .config import get_settings
+from .enrich import enrich_client
+from .enrich_sweep import sweep_domains
+from .feeds import fetch_threatfox, fetch_urlhaus
+from .hunt import run_hunt
 from .logging import configure_logging
 from .pipeline import crawl_source, run_pipeline, run_pipeline_locked
 from .storage import Storage
@@ -176,6 +180,131 @@ async def drain_crawl_requests(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"handled": len(handled), "requests": handled}
 
 
+async def drain_hunt_jobs(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Run whatever company searches the UI queued.
+
+    The same handoff as `drain_crawl_requests` and for the same reason — the API is
+    TypeScript and cannot enqueue an arq job — but deliberately *not* behind the crawl lock.
+    A hunt makes a handful of ordinary HTTPS requests and touches neither Tor nor the crawl
+    pipeline, so making it wait for a fifteen-minute crawl to finish would turn an
+    interactive search into something slower than the thing it was meant to replace.
+
+    Ticks every few seconds. An empty tick is one indexed lookup on the partial
+    `hunt_jobs_status_idx`, which is what makes running it that often reasonable.
+    """
+    storage: Storage = ctx["storage"]
+    settings = ctx["settings"]
+
+    # A worker killed mid-hunt leaves rows at 'running' forever, and the results page polls
+    # those into an endless spinner. Swept here rather than at startup so a crash that took
+    # the host down is still recovered by whichever worker comes back.
+    expired = await storage.expire_stale_hunt_jobs(settings.hunt_timeout_seconds)
+    if expired:
+        log.warning("expired abandoned hunts", hunts=expired)
+
+    handled: list[dict[str, Any]] = []
+
+    # Drain the whole queue in one tick. Several analysts searching at once is the normal
+    # case, and hunts do not contend for anything, so making each wait for its own tick
+    # would add seconds of latency to buy nothing.
+    while (job := await storage.claim_hunt_job()) is not None:
+        try:
+            outcome = await run_hunt(storage, job)
+        except Exception as exc:  # noqa: BLE001 - one bad hunt must not kill the tick
+            log.exception("hunt failed", hunt=job.id)
+            await storage.finish_hunt_job(
+                job.id, status="failed", errors={"hunt": str(exc)[:200]}
+            )
+            handled.append({"id": job.id, "status": "failed"})
+            continue
+
+        await storage.finish_hunt_job(
+            job.id,
+            status=outcome.status,
+            target_domain=outcome.target_domain,
+            errors=outcome.errors or None,
+        )
+        handled.append(
+            {"id": job.id, "status": outcome.status, "findings": outcome.findings}
+        )
+
+    return {"handled": len(handled), "hunts": handled}
+
+
+async def enrich_domains(ctx: dict[str, Any]) -> dict[str, int]:
+    """Fill in WHOIS, technologies and site status for victim domains, a batch at a time.
+
+    Without this the enrichment columns only ever hold the domains someone has personally
+    searched for, and the Ransomware and Dark Web tables show empty columns for every other
+    row — which reads as broken rather than as not-yet-collected.
+
+    Runs on its own cron rather than inside the crawl, because it touches none of the same
+    things: no Tor, no crawl lock, no leak-site traffic. Bolting it onto a crawl would make
+    a fifteen-minute Tor job the gate on data that has nothing to do with Tor.
+    """
+    result = await sweep_domains(storage=ctx["storage"], settings=ctx["settings"])
+    return {
+        "attempted": result.attempted,
+        "enriched": result.enriched,
+        "failed": result.failed,
+    }
+
+
+async def fetch_feeds(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Pull the public indicator feeds and upsert what they hold.
+
+    Hourly, not continuous. These are rolling dumps that change on the order of minutes and
+    are several megabytes each — fetching them more often would cost abuse.ch real bandwidth
+    to learn almost nothing, and they publish them for free.
+
+    Each feed is isolated: one being down is recorded and the other still lands. The same
+    reasoning as the hunt enrichers — a feed outage must not discard a feed that answered.
+    """
+    settings = ctx["settings"]
+    if not settings.feeds_enabled:
+        return {"skipped": "FEEDS_ENABLED is off"}
+
+    storage: Storage = ctx["storage"]
+    collectors = {"urlhaus": fetch_urlhaus, "threatfox": fetch_threatfox}
+    summary: dict[str, Any] = {}
+
+    async with enrich_client() as client:
+        for name, collector in collectors.items():
+            try:
+                indicators = await collector(client, limit=settings.feeds_max_entries)
+            except Exception as exc:  # noqa: BLE001 - one feed must not stop the others
+                log.warning("feed fetch failed", feed=name, error=str(exc))
+                summary[name] = {"error": str(exc)[:200]}
+                continue
+
+            try:
+                new, updated = await storage.upsert_iocs(
+                    [
+                        {
+                            "value": item.value,
+                            "ioc_type": item.ioc_type,
+                            "host": item.host,
+                            "tags": item.tags,
+                            "threat": item.threat,
+                            "note": item.note,
+                            "confidence": item.confidence,
+                            "feed": item.feed,
+                            "feed_ref": item.feed_ref,
+                            "reporter": item.reporter,
+                            "reported_at": item.reported_at,
+                        }
+                        for item in indicators
+                    ]
+                )
+                summary[name] = {"new": new, "seen_again": updated}
+            except Exception as exc:  # noqa: BLE001
+                log.exception("feed store failed", feed=name)
+                summary[name] = {"error": str(exc)[:200]}
+
+    log.info("feeds fetched", **{k: str(v) for k, v in summary.items()})
+    return summary
+
+
 async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
     """Crawl a single source. Enqueued ad hoc, or by a per-source schedule."""
     storage: Storage = ctx["storage"]
@@ -230,7 +359,16 @@ class WorkerSettings:
     it was chosen over Celery for this workload.
     """
 
-    functions = [crawl_all, crawl_due, crawl_one, drain_crawl_requests, match_alerts]  # noqa: RUF012
+    functions = [  # noqa: RUF012
+        crawl_all,
+        crawl_due,
+        crawl_one,
+        drain_crawl_requests,
+        drain_hunt_jobs,
+        enrich_domains,
+        fetch_feeds,
+        match_alerts,
+    ]
     on_startup = startup
     on_shutdown = shutdown
 
@@ -256,6 +394,31 @@ class WorkerSettings:
         cron(
             drain_crawl_requests,
             second=_DRAIN_SECONDS,
+            timeout=_settings.job_timeout_seconds,
+            max_tries=1,
+        ),
+        # Hunts get their own timeout, not the crawl's hour. A search someone is watching
+        # must fail fast and say so; inheriting `job_timeout` would leave a dead hunt
+        # holding the page for an hour.
+        cron(
+            drain_hunt_jobs,
+            second=_DRAIN_SECONDS,
+            timeout=_settings.hunt_timeout_seconds,
+            max_tries=1,
+        ),
+        # Once a minute, a dozen domains. Slow by design — see `enrich_sweep`.
+        cron(
+            enrich_domains,
+            second={5},
+            timeout=_settings.hunt_timeout_seconds,
+            max_tries=1,
+        ),
+        # Hourly, at :34 so it does not land on the same minute as the crawl sweep. The
+        # dumps are several megabytes; fetching them more often costs abuse.ch bandwidth to
+        # learn almost nothing.
+        cron(
+            fetch_feeds,
+            minute={34},
             timeout=_settings.job_timeout_seconds,
             max_tries=1,
         ),

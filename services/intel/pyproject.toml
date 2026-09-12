@@ -11,6 +11,9 @@ dependencies = [
     # extraction / validation
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
+    # enrichment lookups (RDAP, certificate transparency and the liveness probe reuse httpx)
+    # dnspython is only needed for MX/NS records; enrich/dns_records.py degrades without it.
+    "dnspython>=2.7",
     # storage
     "asyncpg>=0.30",
     # runtime

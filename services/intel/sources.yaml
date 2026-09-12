@@ -14,6 +14,14 @@
 # The dead ones were removed. Leak sites rotate addresses and get seized constantly, so
 # re-probe periodically: `consecutive_failures` on each source tracks this automatically.
 #
+# crawl_interval_seconds is the SHALLOW PROBE cadence — one fetch of page 1, which is where
+# leak sites append new victims. 900s is affordable precisely because it is one page: the old
+# 3600s value walked the whole listing every time and the content hash then discarded most of
+# it, so this is roughly a third of the previous Tor traffic at four times the freshness.
+#
+# The full walk is separate, on `deep_crawl_interval_seconds` (default 6h), and is what
+# catches edits to older entries and pages a failed crawl missed.
+#
 # collector:        http (fast, no JS) | browser (Playwright, for JS-rendered listings)
 # pagination_style: none | query (?page=N) | path (/page/N) | offset (?offset=N)
 #
@@ -58,7 +66,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -68,7 +76,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -78,7 +86,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -89,7 +97,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -99,7 +107,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -109,7 +117,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -120,7 +128,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -131,7 +139,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -142,7 +150,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -152,7 +160,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -163,7 +171,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -173,7 +181,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -183,7 +191,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -194,7 +202,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -204,7 +212,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -215,7 +223,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -225,7 +233,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -235,7 +243,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -246,7 +254,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -256,7 +264,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -266,7 +274,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -276,7 +284,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -286,7 +294,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -296,7 +304,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -306,7 +314,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -316,7 +324,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -327,7 +335,7 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -337,7 +345,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -347,7 +355,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -358,7 +366,102 @@
   collector: browser
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: spacex
+  name: Spacex
+  base_url: "http://spacexpkeys5of5zsj6c74wwyut72kcplpua4km644b3zhywv6duz5yd.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: exploit
+  name: Exploit
+  base_url: "http://exploitivzcm5dawzhe6c32bbylyggbjvh5dyvsvb5lkuz5ptmunkmqd.onion/"
+  # CAUTION: "Exploit" is most likely a hacking forum / marketplace, not a ransomware
+  # victim-disclosure site — i.e. the torzon / tenebris case below. Confirm what it actually
+  # is before enabling; the ransomware extractor will produce noise on a forum.
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: garden
+  name: Garden
+  base_url: "http://gardeni2xtbqdpn3mndvod5rzewor2rlo2g5iuyniqwd7vbyt7cwcrqd.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: garden-2
+  name: Garden 2
+  # A second Garden address — likely a mirror of the entry above. Keep both until a probe
+  # shows one is dead; leak sites publish several addresses for the same site.
+  base_url: "http://gardenjsprbg5fchsmofxdjsti76dd7use3v4q4z2suqfgeytjylliid.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: germania
+  name: Germania
+  base_url: "http://germania7zs27fu3gi76wlr5rd64cc2yjexyzvrbm4jufk7pibrpizad.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: bbzzzsvqcrqt
+  name: Bbzzzsvqcrqt
+  base_url: "http://bbzzzsvqcrqtki6umym6itiixfhni37ybtt7mkbjyxn2pgllzxf2qgyd.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: eisrgs2wyyza
+  name: Eisrgs2Wyyza
+  base_url: "http://eisrgs2wyyzaxemtaof3n2kqqxuxdx3y7r5vwfi7rukn3z7owxweznid.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: waa2dbeditmg
+  name: Waa2Dbeditmg
+  base_url: "http://waa2dbeditmgttutm4m64jvwirmwtirhbuupngbhheddadyojgjsttid.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
+  request_delay_seconds: 15
+  enabled: false
+
+- slug: prescoovxnsi
+  name: Prescoovxnsi
+  base_url: "http://prescoovxnsimsdko4aiqaydujz5lsocwja5ctsakredr7s5uwhsvhad.onion/"
+  collector: http
+  pagination_style: none
+  max_pages: 5
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -380,7 +483,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 
@@ -390,7 +493,7 @@
   collector: http
   pagination_style: none
   max_pages: 5
-  crawl_interval_seconds: 3600
+  crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
 

@@ -94,6 +94,14 @@ jobs:
       - name: Seed the CI fixture
         run: npm run fixture:ci -w @leak/db
 
+      # Public sign-up is disabled (apps/api/src/auth.ts), so the smoke test cannot create
+      # the account it signs in with — it has to be provisioned, exactly as a real
+      # deployment provisions one. This password is CI-only and matches smoke-api.sh.
+      - name: Provision the smoke-test account
+        env:
+          PROVISION_PASSWORD: correct-horse-battery
+        run: npm run user:provision -w @leak/api -- --email analyst@example.com --name Analyst
+
       - name: Start API
         run: |
           npm run api:dev > /tmp/api.log 2>&1 &

@@ -18,14 +18,31 @@ check "GET /api/sources unauth         -> 401"       401 "$(status $API/api/sour
 check "GET /api/alerts unauth          -> 401"       401 "$(status $API/api/alerts)"
 check "GET /healthz stays public       -> 200"       200 "$(status $API/healthz)"
 
-echo "== registration =="
-SIGNUP=$(curl -s -o /dev/null -w '%{http_code}' -X POST $API/api/auth/sign-up/email \
+echo "== registration is closed =="
+# `auth.ts` sets disableSignUp, so there is no public registration. Accounts are provisioned
+# with `npm run user:provision -w @leak/api`, which CI runs before this script and which is
+# where analyst@example.com below comes from.
+#
+# This section used to sign up that account and then sign in as it. That silently stopped
+# working when sign-up was disabled: the sign-up response was only echoed, never asserted, so
+# the failure surfaced one step later as "sign-in -> 200 (got 401)" and took every
+# authenticated check after it down with it.
+#
+# Asserting the rejection is worth more than asserting a registration ever was. An open
+# sign-up endpoint on a threat-intel console is a real finding, and nothing else in the suite
+# would notice if one came back.
+#
+# The code is checked as "not a success" rather than as a literal 400: better-auth is free to
+# answer a disabled endpoint with either 400 or 403, and pinning the exact number would make
+# this fail on a dependency bump that changed nothing that matters.
+SIGNUP=$(status -X POST $API/api/auth/sign-up/email \
   -H 'content-type: application/json' \
-  -d '{"email":"analyst@example.com","password":"correct-horse-battery","name":"Analyst"}')
-echo "  sign-up returned $SIGNUP (200 first run, 4xx if already exists)"
-
-check "short password rejected" 400 "$(curl -s -o /dev/null -w '%{http_code}' -X POST $API/api/auth/sign-up/email \
-  -H 'content-type: application/json' -d '{"email":"weak@example.com","password":"short","name":"W"}')"
+  -d '{"email":"intruder@example.com","password":"correct-horse-battery","name":"Intruder"}')
+check "public sign-up is rejected" "yes" \
+  "$( [ "$SIGNUP" != "200" ] && [ "$SIGNUP" != "201" ] && echo yes || echo no)"
+check "rejected sign-up created no account" 401 \
+  "$(status -X POST $API/api/auth/sign-in/email -H 'content-type: application/json' \
+      -d '{"email":"intruder@example.com","password":"correct-horse-battery"}')"
 
 echo "== sign in =="
 LOGIN=$(status -c "$JAR" -X POST $API/api/auth/sign-in/email \

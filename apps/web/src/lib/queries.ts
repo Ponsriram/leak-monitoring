@@ -54,6 +54,9 @@ export type LeakFilters = {
 /** One facet of the tag filters: a country or sector and how many leaks carry it. */
 export type TagFacet = { value: string; total: number };
 
+/** The facets `/api/stats/leaks-per-tag` can group by. Mirrors that route's enum. */
+export type TagKind = "country" | "sector" | "type";
+
 export type CrawlRequest = {
   id: number;
   sourceSlug: string | null;
@@ -126,6 +129,80 @@ export type Summary = {
   failingSources: number;
 };
 
+// --- search & hunt ---
+
+export type SearchLeakHit = {
+  id: number;
+  victimName: string | null;
+  victimDomain: string | null;
+  victimCountry: string | null;
+  victimSector: string | null;
+  actorGroup: string;
+  status: string;
+  sourceSlug: string | null;
+  sourceUrl: string | null;
+  publishedAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  leakSizeBytes: number | null;
+  /** Full-text rank. Zero means the row matched on substring only. */
+  rank: number;
+};
+
+/** WHOIS contacts, keyed by the role the registry assigns them. */
+export type WhoisContacts = Partial<
+  Record<"registrarAbuse" | "registrant" | "admin" | "tech" | "billing", string[]>
+>;
+
+export type DomainHit = {
+  domain: string;
+  registrar: string | null;
+  status: "not_scanned" | "live" | "down" | "error";
+  httpStatus: number | null;
+  technologies: string[] | null;
+  pageTitle: string | null;
+  whoisContacts: WhoisContacts | null;
+  checkedAt: string | null;
+};
+
+export type SearchResult = {
+  query: string;
+  leaks: SearchLeakHit[];
+  domains: DomainHit[];
+  hunt: { suggested: boolean; reason: string; existingJobId: number | null };
+};
+
+export type HuntStatus = "queued" | "running" | "succeeded" | "partial" | "failed";
+
+export type HuntJob = {
+  id: number;
+  query: string;
+  targetDomain: string | null;
+  status: HuntStatus;
+  requestedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  findingsCount: number;
+  errors: Record<string, string> | null;
+};
+
+export type HuntFindingKind =
+  | "leak_match"
+  | "raw_page_mention"
+  | "registration"
+  | "infrastructure"
+  | "certificate"
+  | "liveness";
+
+export type HuntFinding = {
+  id: number;
+  kind: HuntFindingKind;
+  title: string;
+  detail: Record<string, unknown> | null;
+  sourceLabel: string;
+  occurredAt: string | null;
+};
+
 // --- query keys ---
 
 export const keys = {
@@ -135,10 +212,12 @@ export const keys = {
   summary: () => ["stats", "summary"] as const,
   perDay: (days: number) => ["stats", "per-day", days] as const,
   perGroup: (limit: number) => ["stats", "per-group", limit] as const,
-  perTag: (tag: "country" | "sector") => ["stats", "per-tag", tag] as const,
+  perTag: (tag: TagKind) => ["stats", "per-tag", tag] as const,
   crawlStatus: () => ["crawl", "status"] as const,
   alerts: () => ["alerts"] as const,
   alertEvents: () => ["alert-events"] as const,
+  search: (q: string, limit: number) => ["search", q, limit] as const,
+  hunt: (id: number) => ["hunt", id] as const,
 };
 
 /** 60s — fresh enough for a monitoring view, gentle enough on the database. */
@@ -189,7 +268,7 @@ export function useLeaksPerGroup(limit = 8) {
   });
 }
 
-export function useLeaksPerTag(tag: "country" | "sector") {
+export function useLeaksPerTag(tag: TagKind) {
   return useQuery({
     queryKey: keys.perTag(tag),
     queryFn: () =>
@@ -304,5 +383,67 @@ export function useDeleteAlert() {
   return useMutation({
     mutationFn: (id: number) => apiFetch<void>(`/api/alerts/${id}`, { method: "DELETE" }),
     onSuccess: () => client.invalidateQueries({ queryKey: keys.alerts() }),
+  });
+}
+
+// --- search & hunt ---
+
+/**
+ * Instant search. Never touches the network beyond our own API, so it can run on every
+ * keystroke once debounced.
+ *
+ * `enabled` gates on a two-character minimum because the API rejects anything shorter —
+ * firing those would mean a 400 on the first letter typed into an empty box.
+ */
+export function useSearch(query: string, limit = 20) {
+  const trimmed = query.trim();
+  return useQuery({
+    queryKey: keys.search(trimmed, limit),
+    queryFn: () => apiFetch<SearchResult>(`/api/search${qs({ q: trimmed, limit })}`),
+    enabled: trimmed.length >= 2,
+    // Results are stable for a moment — retyping the same term should not re-query.
+    staleTime: 30_000,
+    placeholderData: (previous) => previous,
+  });
+}
+
+/**
+ * A hunt and its findings so far.
+ *
+ * Polls only while the hunt is open. Findings accumulate as each enricher returns, so a
+ * running hunt already has rows worth rendering — this is what makes the results page fill
+ * in progressively instead of showing a spinner for twenty seconds.
+ *
+ * Two seconds rather than the dashboard's sixty: someone is watching this one, and the whole
+ * job usually finishes inside five. The live stream pushes the same transitions, so this
+ * poll is the fallback for a dropped stream rather than the primary mechanism.
+ */
+export function useHunt(jobId: number | null) {
+  return useQuery({
+    queryKey: keys.hunt(jobId ?? 0),
+    queryFn: () =>
+      apiFetch<{ job: HuntJob; findings: HuntFinding[] }>(`/api/hunt/${jobId}`),
+    enabled: jobId !== null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.job.status;
+      return status === "queued" || status === "running" ? 2_000 : false;
+    },
+  });
+}
+
+/** Start a hunt. Returns the existing one if a recent hunt already answers this query. */
+export function useStartHunt() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (query: string) =>
+      apiFetch<{ job: HuntJob; cached: boolean }>("/api/hunt", {
+        method: "POST",
+        body: JSON.stringify({ query }),
+      }),
+    onSuccess: ({ job }) => {
+      // Seed the cache so the results panel renders from the response we already have,
+      // rather than blanking while the first poll goes out.
+      queryClient.setQueryData(keys.hunt(job.id), { job, findings: [] });
+    },
   });
 }

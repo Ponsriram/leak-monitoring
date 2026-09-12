@@ -1,3 +1,4 @@
+import { ExternalLink } from "../../components/ExternalLink";
 import { useEffect, useState } from "react";
 import { LeakStatusChip } from "../../components/StatusChip";
 import { TagChip } from "../../components/TagChip";
@@ -279,8 +280,8 @@ export function LeaksPage() {
                       <td className="strong">
                         {leak.victimName ?? "—"}
                         {leak.victimDomain && (
-                          <div style={{ color: "var(--muted)", fontSize: 12 }}>
-                            {leak.victimDomain}
+                          <div style={{ fontSize: 12 }}>
+                            <ExternalLink value={leak.victimDomain} className="mono" />
                           </div>
                         )}
                       </td>

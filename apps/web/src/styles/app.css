@@ -348,6 +348,28 @@ select { cursor: pointer; }
 .login-head .brand { justify-content: center; margin-bottom: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
 .field label { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+
+/* Password input with an in-field show/hide toggle. The input keeps room on its right so the
+   revealed text never runs under the eye button. */
+.password-field { position: relative; display: flex; }
+.password-field input { flex: 1; padding-right: 38px; }
+.password-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.password-toggle:hover { color: var(--text-2); }
+.password-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .form-error {
   background: color-mix(in srgb, var(--status-critical) 10%, transparent);
   color: var(--status-critical);
@@ -394,4 +416,1000 @@ select { cursor: pointer; }
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* ---------- NER tag chips ---------- */
+
+/*
+ * Tags are inferred, not reported by the source, so they are visually quieter than the
+ * status chip beside them: an outline rather than a filled tone. Status is a claim the
+ * leak site made; a tag is our best reading of it, and the two should not look equally
+ * certain.
+ */
+.chip.tag {
+  background: transparent;
+  border-color: var(--border-2);
+  color: var(--text-2);
+  font-weight: 550;
+}
+.chip.tag .tag-icon { color: var(--muted); font-size: 10px; }
+.chip.tag-country { border-color: color-mix(in srgb, var(--accent) 35%, var(--border-2)); }
+
+.tag-cell { display: flex; flex-wrap: wrap; gap: 4px; max-width: 260px; }
+
+/* ---------- sync control ---------- */
+
+.sync { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.sync-note {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+  max-width: 420px;
+}
+.sync-fail { color: var(--status-critical); }
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* A crawl runs for minutes. A spinner turning that long is a distraction, not information,
+   for anyone who finds motion hard to ignore. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: currentColor; opacity: 0.5; }
+}
+
+/* ---------- latest arrivals ---------- */
+
+.arrivals-card { margin-bottom: 16px; }
+
+.arrivals {
+  display: grid;
+  /* auto-fill, not auto-fit: with six cards on a wide screen auto-fit stretches each one to
+     table width, which reads as six rows rather than a strip. */
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 10px;
+  padding: 14px 16px 16px;
+}
+
+.arrival {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 11px 12px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.arrival.is-new {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--accent-wash);
+}
+
+.arrival-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+.arrival-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  flex: none;
+}
+
+/* Text, not a colored dot: "new" has to survive a greyscale screen and a screen reader. */
+.arrival-new {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+}
+
+.arrival-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  /* Company names run long and a card that grows to fit one breaks the grid's rhythm. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.arrival-group { color: var(--muted); font-size: 11.5px; }
+.arrival-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.arrival-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  margin-top: auto;
+  padding-top: 2px;
+}
+
+/* --- Map console ---
+   A geographic map on the left, a ranked breakdown on the right. The map card is a frame
+   around a large canvas rather than the usual padded content block. */
+.map-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: stretch;
+}
+@media (max-width: 900px) {
+  .map-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.map-card {
+  overflow: hidden;
+}
+.map-canvas {
+  width: 100%;
+  height: clamp(420px, 68vh, 720px);
+  background: var(--surface-2);
+}
+
+/* Side panel: headline total, then a ranked list of countries with share bars. */
+.map-side {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+}
+.map-total-num {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.map-total-label {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+.map-rank {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  /* Every located country is listed, so the panel scrolls rather than growing without bound.
+     Bounded to roughly the map's height and padded so the scrollbar doesn't crowd the bars. */
+  max-height: clamp(320px, 56vh, 600px);
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+}
+.map-rank::-webkit-scrollbar {
+  width: 8px;
+}
+.map-rank::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 999px;
+}
+.rank-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rank-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.rank-flag {
+  font-size: 15px;
+  line-height: 1;
+}
+.rank-name {
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rank-pct {
+  margin-left: auto;
+  color: var(--text-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.rank-track {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.rank-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  transition: width 0.4s ease;
+}
+/* Leaflet stamps its own colours onto controls and popups; pull them back to the app's
+   tokens so the map reads as part of the console in both light and dark themes. */
+.map-canvas .leaflet-container {
+  font: inherit;
+  background: var(--surface-2);
+}
+.map-canvas .leaflet-popup-content-wrapper,
+.map-canvas .leaflet-tooltip {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.map-canvas .leaflet-popup-tip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.map-canvas .leaflet-bar a {
+  background: var(--surface);
+  color: var(--text);
+  border-bottom-color: var(--border);
+}
+.map-canvas .leaflet-bar a:hover {
+  background: var(--surface-hover);
+}
+.map-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.map-note {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.map-note-muted {
+  color: var(--muted);
+}
+
+/* --- search, hunt and the live indicator -------------------------------------------- */
+
+/*
+ * The shell's top bar. Sits above the routed page rather than inside it, so the search box
+ * and the live indicator survive navigation — both are properties of the console, not of
+ * whichever page happens to be open.
+ */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.global-search {
+  flex: 1;
+  max-width: 520px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.global-search:focus-within { border-color: var(--accent); }
+.global-search input {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.global-search kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.search-icon { color: var(--muted); font-size: 15px; line-height: 1; }
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.search-bar:focus-within { border-color: var(--accent); }
+.search-input {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+
+/*
+ * The live badge. Colour alone would carry the whole meaning for a sighted user and none of
+ * it otherwise, so the state is always spelled out in words beside the dot.
+ */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.live-on .live-dot { background: var(--status-good); }
+.live-on { color: var(--status-good); }
+.live-off .live-dot { background: var(--status-warning); }
+.live-off { color: var(--status-warning); }
+.live-count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+
+/* Pulse only when the connection is live, and never for anyone who has asked for less
+   motion — a dot blinking forever in the corner of a monitoring console is a genuine
+   accessibility problem, not a flourish. */
+@media (prefers-reduced-motion: no-preference) {
+  .live-on .live-dot { animation: live-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.hunt-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.hunt-prompt p { margin: 2px 0 0; font-size: 13px; }
+/* Only the "we have little on this company" case is emphasised. Highlighting the prompt
+   unconditionally would train people to ignore it. */
+.hunt-prompt-suggested {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-wash);
+}
+
+.domain-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.domain-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--bg);
+}
+.domain-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.domain-name { font-size: 13.5px; font-weight: 600; word-break: break-all; }
+.domain-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+.domain-label {
+  flex: none;
+  width: 72px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.domain-card-foot { margin-top: 8px; font-size: 11.5px; }
+
+/* Site status, matching the enum in the database exactly so a new value cannot silently
+   render as an unstyled chip. */
+.chip.site-live      { color: var(--status-good);     background: color-mix(in srgb, var(--status-good) 12%, transparent); }
+.chip.site-down      { color: var(--status-critical); background: color-mix(in srgb, var(--status-critical) 12%, transparent); }
+.chip.site-error     { color: var(--status-warning);  background: color-mix(in srgb, var(--status-warning) 14%, transparent); }
+.chip.site-not_scanned { color: var(--muted);         background: var(--surface-2); }
+
+.chip.hunt-queued, .chip.hunt-running { color: var(--accent); background: var(--accent-wash); }
+.chip.hunt-succeeded { color: var(--status-good);     background: color-mix(in srgb, var(--status-good) 12%, transparent); }
+.chip.hunt-partial   { color: var(--status-warning);  background: color-mix(in srgb, var(--status-warning) 14%, transparent); }
+.chip.hunt-failed    { color: var(--status-critical); background: color-mix(in srgb, var(--status-critical) 12%, transparent); }
+
+.chip-subtle { color: var(--muted); background: var(--surface-2); }
+.chip-actor  { font-family: var(--mono); font-size: 11.5px; }
+.chip-tech   { background: var(--surface-2); color: var(--text-2); }
+.chip-whois, .chip-dns { font-family: var(--mono); font-size: 11px; background: var(--surface-2); }
+.chip-role {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 5px;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.finding-groups { display: flex; flex-direction: column; gap: 18px; }
+.finding-group h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-2);
+  margin: 0 0 8px;
+}
+.findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.finding {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+.finding-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.finding-title { font-weight: 600; font-size: 13.5px; }
+.finding-excerpt {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+/* The crawled excerpt is text from a criminal leak site, rendered as text and never as
+   HTML. `mark` here is our own element wrapping a split fragment, not markup from the page. */
+.finding-excerpt mark {
+  background: color-mix(in srgb, var(--status-warning) 30%, transparent);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+.notice {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.notice ul { margin: 6px 0 0; padding-left: 18px; }
+.notice-warning {
+  border: 1px solid color-mix(in srgb, var(--status-warning) 40%, var(--border));
+  background: color-mix(in srgb, var(--status-warning) 8%, transparent);
+}
+
+.victim a { color: var(--text); text-decoration: none; font-weight: 600; }
+.victim a:hover { color: var(--accent); text-decoration: underline; }
+
+/* --- incident sections ---------------------------------------------------------------- */
+
+.nav-group { margin-bottom: 14px; }
+.nav-icon {
+  display: inline-block;
+  width: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: 8px;
+}
+.nav a.active .nav-icon, .nav a[aria-current="page"] .nav-icon { color: inherit; }
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.filter-input, .filter-select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.filter-input:focus, .filter-select:focus { border-color: var(--accent); }
+.filter-input { min-width: 220px; flex: 1; max-width: 320px; }
+
+.card-body.no-pad { padding: 0; }
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.pager { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pager-gap { color: var(--muted); padding: 0 2px; }
+
+/* The section tables carry many columns; vertical-align keeps multi-chip cells aligned to
+   the row's first line rather than floating in the middle of a tall row. */
+.incident-table td { vertical-align: top; }
+.incident-table .col-expand { width: 28px; padding-right: 0; }
+.expander {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  line-height: 1;
+}
+.expander:hover { color: var(--accent); }
+.row-expanded > td { background: var(--surface-hover); }
+.row-detail > td { background: var(--surface-hover); padding: 0 16px 14px 32px; }
+
+.victim-name { font-weight: 600; }
+.small { font-size: 11.5px; }
+.nowrap { white-space: nowrap; }
+.break { word-break: break-all; }
+
+.chip-domain { background: var(--surface-2); color: var(--text-2); }
+.chip-category {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  padding-top: 12px;
+}
+.detail-block h4 {
+  margin: 0 0 7px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.detail-line { display: flex; gap: 8px; font-size: 12.5px; padding: 2px 0; }
+.detail-label { flex: none; width: 86px; color: var(--muted); }
+.detail-value { color: var(--text-2); min-width: 0; }
+
+/* --- live threat map ------------------------------------------------------------------ */
+
+/*
+ * Full-bleed. The map is the page, not a card on it — the surrounding page padding that
+ * suits a table wastes the space the map most needs.
+ */
+.map-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.map-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.map-title { flex: 1; min-width: 200px; }
+.map-title h1 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 7px; }
+.map-title h1 > span { color: var(--accent); font-size: 13px; }
+.map-title p { margin: 2px 0 0; }
+.map-controls { display: flex; align-items: center; gap: 8px; }
+.date-input { min-width: 0; }
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.segmented button {
+  border: 0;
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button:hover { background: var(--surface-hover); }
+.segmented button.active { background: var(--accent); color: var(--accent-ink); }
+
+.map-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.map-canvas { position: relative; flex: 1; min-width: 0; }
+.leaflet-host { position: absolute; inset: 0; background: var(--bg); }
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 500;
+}
+.map-overlay > * { pointer-events: auto; }
+.map-clear { position: absolute; left: 12px; bottom: 12px; z-index: 500; }
+
+/* Land. Styled here rather than through Leaflet's colour options, because those become SVG
+   presentation attributes where a CSS variable never resolves. */
+.map-land { fill: var(--surface-2); stroke: var(--border-2); }
+
+/* Leaflet paints its own containers white; without this the map is a bright slab in dark
+   mode regardless of the theme. */
+.leaflet-container { background: var(--bg) !important; font: inherit; }
+.leaflet-tooltip {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow) !important;
+  font-size: 12px;
+}
+.leaflet-tooltip::before { border-top-color: var(--border) !important; }
+.leaflet-control-zoom a {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+
+.actor-rail {
+  width: 320px;
+  flex: none;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.actor-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.actor-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+.actor-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 10px 11px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.actor-card:hover { border-color: var(--border-2); background: var(--surface-hover); }
+.actor-card-selected { border-color: var(--accent); background: var(--accent-wash); }
+.actor-card-head { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 9px; }
+.actor-swatch { width: 26px; height: 26px; border-radius: 6px; flex: none; }
+.actor-ident { min-width: 0; flex: 1; }
+.actor-name { display: block; font-weight: 600; font-size: 13.5px; margin-bottom: 4px; word-break: break-all; }
+
+.actor-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+.counter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.counter-value { font-weight: 600; font-size: 13px; }
+.counter-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+/* A zero that means "no source connected" should not read as a confident measurement. */
+.counter-zero .counter-value { color: var(--muted); font-weight: 500; }
+
+.live-badge {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.live-badge:hover { border-color: var(--accent); }
+.live-open { color: var(--muted); font-size: 10px; margin-left: 2px; }
+
+@media (max-width: 900px) {
+  .map-body { flex-direction: column; }
+  .actor-rail { width: auto; border-left: 0; border-top: 1px solid var(--border); max-height: 40vh; }
+}
+
+/* --- indicators of compromise ---------------------------------------------------------- */
+
+/*
+ * The indicator itself is monospace and wraps rather than truncating. A URL cut off mid-path
+ * is not a usable indicator — the whole value is the thing being recorded — and these are
+ * routinely long enough to overflow any fixed column.
+ */
+.ioc-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+  display: inline-block;
+  max-width: 460px;
+}
+
+.chip.ioc-type-ip        { color: var(--series-1); background: color-mix(in srgb, var(--series-1) 14%, transparent); }
+.chip.ioc-type-domain    { color: var(--status-good); background: color-mix(in srgb, var(--status-good) 12%, transparent); }
+.chip.ioc-type-url       { color: var(--status-warning); background: color-mix(in srgb, var(--status-warning) 16%, transparent); }
+.chip.ioc-type-file_hash { color: var(--accent); background: var(--accent-wash); }
+.chip.ioc-type-email     { color: var(--text-2); background: var(--surface-2); }
+
+.chip-tag {
+  background: color-mix(in srgb, var(--status-critical) 10%, transparent);
+  color: var(--status-critical);
+}
+a.chip-subtle { text-decoration: none; }
+a.chip-subtle:hover { color: var(--accent); border-color: var(--accent); }
+
+.cell-note { max-width: 280px; }
+
+/* --- external links, copy buttons, timestamps, incident type -------------------------- */
+
+/*
+ * A victim domain, linked out.
+ *
+ * Underline on hover rather than always: a table column of permanently underlined domains
+ * is a wall of rules, and the accent colour already marks them as links at rest.
+ */
+.ext-link-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+.ext-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  text-decoration: none;
+  min-width: 0;
+}
+.ext-link:hover { color: var(--accent-hover); text-decoration: underline; }
+/* The label is already ellipsised at 40 chars in JS; this catches the narrow-viewport case
+   where even a short domain would push the column wider than the screen. */
+.ext-link-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ext-link-icon { flex: none; opacity: 0.75; }
+.ext-link:hover .ext-link-icon { opacity: 1; }
+
+.copy-btn {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 1px 3px;
+  line-height: 1;
+  font-size: 12px;
+  border-radius: 3px;
+  flex: none;
+}
+.copy-btn:hover { color: var(--accent); background: var(--surface-2); }
+.copy-btn-failed { color: var(--status-critical); }
+
+/* Visible to assistive tech only. Clipped rather than display:none, which removes it from
+   the accessibility tree along with the live-region announcement. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.src-url {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* Absolute stamp over the relative one, so the column scans as dates. */
+.stamp { display: flex; flex-direction: column; gap: 1px; }
+.stamp-abs { color: var(--text-2); }
+.stamp-rel { font-size: 11px; }
+.stamp-inline { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+
+/* Sortable headers. The button carries the click target so the header is reachable by
+   keyboard without adding a tabindex to the th itself. */
+.th-sort {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.th-sort:hover { color: var(--text); }
+.th-sort-arrow { font-size: 8px; opacity: 0.7; }
+
+/*
+ * Incident type.
+ *
+ * Colour-coded per class, but the word is always rendered — same rule as every other chip in
+ * this console. Unclassified is deliberately the quietest: it means we do not know, and it
+ * should not draw the eye ahead of a row we did classify.
+ */
+.chip-type {
+  border-color: transparent;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.type-ransomware       { color: var(--status-critical); background: color-mix(in srgb, var(--status-critical) 12%, transparent); }
+.type-data_leak        { color: var(--status-serious);  background: color-mix(in srgb, var(--status-serious) 14%, transparent); }
+.type-credential_dump  { color: var(--status-warning);  background: color-mix(in srgb, var(--status-warning) 16%, transparent); }
+.type-darkweb_mention  { color: var(--accent);          background: var(--accent-wash); }
+.type-defacement       { color: var(--series-1);        background: var(--series-1-fill); }
+.type-unclassified     { color: var(--muted);           background: var(--surface-2); }
+
+/*
+ * Uncapped chip cells.
+ *
+ * Technology and WHOIS cells now render every value, so they need a width to wrap inside —
+ * without one a twenty-technology row stretches the column and the table scrolls sideways
+ * instead of the cell growing taller.
+ */
+/*
+ * `min-width` as well as `max-width`, and the min is what actually matters.
+ *
+ * In `table-layout: auto` a max-width alone does not reserve anything — the algorithm gives
+ * a wrapping chip cell its minimum content width and every chip lands on its own line, so
+ * a twenty-technology row rendered as a 350px-tall column one chip wide. The min-width is
+ * what buys the column enough room to wrap properly; the max stops it swallowing the table.
+ */
+.incident-table .cell-technologies,
+.incident-table .cell-whois { min-width: 250px; max-width: 340px; }
+.incident-table .cell-technologies .chips,
+.incident-table .cell-whois .chips { max-width: 100%; }
+.incident-table .chip-tech,
+.incident-table .chip-whois {
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+}
+
+@media (max-width: 860px) {
+  /* The table already scrolls horizontally inside .table-wrap; narrowing the chip cells
+     keeps that scroll short rather than letting one enriched row set the table's width. */
+  .incident-table .cell-technologies,
+  .incident-table .cell-whois { min-width: 170px; max-width: 200px; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .detail-line { flex-wrap: wrap; }
+}
+
+/* The indicator and its copy button. `flex-start` so the button stays on the first line of
+   a URL that wrapped onto three. */
+.ioc-value-row {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Uncapped tag and WHOIS cells on the IOC table, on the same reasoning as the incident
+   tables: bound the column so the cell grows downward instead of the table growing sideways. */
+.incident-table td .chips { max-width: 100%; }
+.incident-table .chip-tag { max-width: 100%; white-space: normal; word-break: break-word; }
+
+@media (max-width: 860px) {
+  .ioc-value { max-width: 200px; }
+  .cell-note { max-width: 180px; }
+}
+
+/* --- theme toggle --------------------------------------------------------------------- */
+
+/*
+ * Sits at the right end of the topbar, after the live badge, so it never displaces the
+ * search box as the window narrows.
+ */
+.theme-toggle { margin-left: auto; flex: none; }
+.theme-toggle button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.theme-icon { font-size: 11px; line-height: 1; }
+
+/*
+ * Below the sidebar breakpoint the topbar is the app's only chrome and the search box needs
+ * the room, so the control collapses to its icons. The labels stay in the DOM rather than
+ * being removed — `title` on each button and `aria-label` on the group keep the meaning for
+ * anyone who cannot read the glyph.
+ */
+@media (max-width: 860px) {
+  .theme-toggle .theme-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .theme-toggle button { padding: 5px 9px; }
+  .theme-icon { font-size: 13px; }
 }

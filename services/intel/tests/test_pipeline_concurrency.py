@@ -93,8 +93,12 @@ class FakeStorage:
     def __init__(self) -> None:
         self.saved: list[tuple[int, str]] = []
         self.finished: dict[str, object] = {}
+        # Which kind of crawl each run was opened as, so the shallow/deep split can be
+        # asserted on rather than inferred from the page count.
+        self.depths: list[str] = []
 
-    async def start_crawl(self, source_id: int) -> int:
+    async def start_crawl(self, source_id: int, *, depth: str = "deep") -> int:
+        self.depths.append(depth)
         return 99
 
     async def known_onion_hosts(self) -> set[str]:

@@ -22,6 +22,11 @@ _VOLATILE_SELECTORS = (
     "[id*='timer']",
 )
 
+# A clock renders as a few characters ("2h 39m", "4 D 15 H 34 M 21 S"). A matched element
+# holding more text than this is a container that merely carries the word — direwolf marks
+# every victim card `card countdown-active` — and removing it deleted the whole listing.
+_VOLATILE_MAX_CHARS = 40
+
 
 def to_text(html: str, *, drop_volatile: bool = True) -> str:
     """Extract readable text from a page."""
@@ -35,7 +40,8 @@ def to_text(html: str, *, drop_volatile: bool = True) -> str:
         for selector in _VOLATILE_SELECTORS:
             try:
                 for node in tree.css(selector):
-                    node.decompose()
+                    if len(node.text(strip=True)) <= _VOLATILE_MAX_CHARS:
+                        node.decompose()
             except Exception:  # noqa: BLE001 - selectolax raises on odd selectors
                 continue
 

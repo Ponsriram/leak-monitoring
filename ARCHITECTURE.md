@@ -3,14 +3,13 @@
 How the system is put together, what each folder does, and how a leak travels from an onion
 site to the dashboard.
 
-To *run* it, see **[START.md](START.md)**. For rebuild history and known issues, see
-**[ROADMAP.md](ROADMAP.md)**.
+To *run* it, see **[START.md](START.md)**. Known limitations are at the end of this page.
 
 ---
 
 ## The shape of it
 
-Four moving parts plus two datastores.
+Three moving parts plus two datastores.
 
 ```
                     ┌──────────────┐
@@ -20,8 +19,8 @@ Four moving parts plus two datastores.
                            │ socks5
                     ┌──────▼───────┐
                     │  worker      │  Python. Crawls, extracts, loads.
-                    │  services/   │  arq cron: hourly at :17
-                    │    intel     │
+                    │  services/   │  arq cron: due-source sweep every
+                    │    intel     │  5 min, enrichment every minute
                     └──────┬───────┘
                            │ writes
         ┌──────────────────▼──────────────────┐
@@ -30,17 +29,15 @@ Four moving parts plus two datastores.
         └──────────────────┬──────────────────┘
                            │ reads
                     ┌──────▼───────┐
-                    │  api         │  Fastify. Auth, queries, aggregates.
-                    │  apps/api    │  stateless — no background work
+                    │  api         │  Fastify. Auth, queries, aggregates,
+                    │  apps/api    │  and the built React app (apps/web)
+                    │              │  stateless — no background work
                     └──────┬───────┘
-                           │ HTTP (proxied by nginx, same origin)
-                    ┌──────▼───────┐
-                    │  web         │  React SPA served by nginx
-                    │  apps/web    │  :8080
-                    └──────────────┘
+                           │ HTTP, one origin — :8080
+                        browser
 ```
 
-**The API does no background work.** Crawling and alert matching live in the worker. That
+**The API does no background work.** Crawling, enrichment and feed ingestion live in the worker. That
 separation is deliberate: the API can be restarted, scaled or redeployed at any moment
 without interrupting a crawl, and a slow crawl can never block a dashboard request.
 
@@ -78,7 +75,9 @@ with raw SQL but never migrates them.
 | `src/schema/leaks.ts` | The canonical leak entity |
 | `src/schema/sources.ts` | Monitored sites + crawl health |
 | `src/schema/crawls.ts` | `crawl_runs` and `raw_pages` — provenance |
-| `src/schema/alerts.ts` | Alert rules and delivery events |
+| `src/schema/enrichment.ts` | `domain_enrichment` — WHOIS, DNS, site status per domain |
+| `src/schema/iocs.ts` | Indicators of compromise from public feeds |
+| `src/schema/mobile.ts` | Scam phone-number reports (Bulk Intelligence · Mobile Number) |
 | `src/schema/auth.ts` | Better Auth's four tables |
 | `test/fixture-seed.ts` | CI-only fixture. Refuses to run against a database holding real crawls |
 | `test/schema.test.ts` | Constraint tests against PGlite (real Postgres, in WASM) |
@@ -91,8 +90,8 @@ with raw SQL but never migrates them.
 | `src/app.ts` | Builds the Fastify instance, registers plugins and routes |
 | `src/server.ts` | Boot + graceful shutdown |
 | `src/auth.ts` | Better Auth configuration |
-| `src/plugins/` | db pool, auth guard, error handler |
-| `src/routes/` | leaks, sources, stats, alerts, health |
+| `src/plugins/` | db pool, auth guard, error handler, serving the built web app |
+| `src/routes/` | leaks, incidents, iocs, search, sources, stats, crawl, stream, health |
 
 ### `apps/web` — the dashboard
 
@@ -102,25 +101,28 @@ with raw SQL but never migrates them.
 | `src/lib/queries.ts` | One typed hook per endpoint (TanStack Query) |
 | `src/components/AppLayout.tsx` | Layout route — sidebar mounts once |
 | `src/components/ProtectedRoute.tsx` | Auth gate, wraps the whole dashboard |
-| `src/features/` | One folder per feature: auth, dashboard, leaks, sources, alerts |
+| `src/features/` | One folder per feature: auth, dashboard, incidents, iocs, leaks, map, search, sources |
 | `src/styles/tokens.css` | Design tokens, light + dark |
 
 ### `services/intel` — collection
 
 | Path | Purpose |
 |---|---|
-| `intel/cli.py` | `intel run / status / sources / extract-file` |
+| `intel/cli.py` | `intel run / status / sources / extract-file / backfill-descriptions` |
 | `intel/pipeline.py` | fetch → hash → parse → extract → dedupe → upsert |
 | `intel/collectors/` | `tor_http.py` (async httpx), `tor_browser.py` (Playwright) |
 | `intel/extract/linker.py` | **Spans → discrete leaks.** The core logic. |
-| `intel/extract/rules.py` | Default extractor. No ML required. |
-| `intel/extract/gliner_extractor.py` | Zero-shot NER. Optional `ml` extra. |
+| `intel/extract/rules.py` | The extractor: patterns and word lists, no ML. |
 | `intel/extract/normalize.py` | Dates → `timestamptz`, `"1.2 TB"` → bytes |
 | `intel/extract/gazetteer.py` | Country and sector lookup — fills `victim_country` / `victim_sector` |
+| `intel/extract/describe.py` | Each listing's summary text, and its incident types |
+| `intel/enrich_sweep.py` | Background WHOIS/DNS/status for victim domains; WHOIS-only for IOC hosts |
 | `intel/scheduling.py` | Page waves: which pages a crawl fetches together |
 | `intel/models.py` | Pydantic `ExtractedLeak` — validates everything |
 | `intel/storage.py` | The only module that speaks SQL |
-| `intel/tasks.py` | arq worker: due-source sweep, request drain, alert matching |
+| `intel/tasks.py` | arq worker: due-source sweep, request drain, enrichment, feeds |
+| `intel/feeds/` | Public feeds: URLhaus, ThreatFox, TweetFeed (-> `iocs`), ransomware.live (-> `leaks`), scam-number reports (-> `mobile_numbers`) |
+| `intel/extract/phones.py` | Phone-number regex, libphonenumber validation, threat-type / audience classification |
 | `sources.yaml` | The monitored sites. Mounted, not baked in. |
 
 ---
@@ -192,24 +194,31 @@ are two separate leak events, so the group is part of the key.
 `published_at` is a real `timestamptz`; `published_at_raw` keeps the original text so a bad
 parse can be audited rather than guessed at.
 
-### Alert matchers are typed, never regex
+### A crawl that reaches a gate is a failed crawl
 
-`match_kind` is one of `exact | domain | substring | actor_group`. There is no field where a
-user can supply a pattern. Matching runs in SQL against indexed columns when a new leak
-arrives — not on a timer.
+A page 1 that is a DDoS access queue, a human check, a maintenance notice or a login wall
+answers HTTP 200 with a few hundred characters. It is recorded as a failure with the gate
+named, so `consecutive_failures` shows a blocked source instead of a healthy one collecting
+nothing. The crawler does not attempt to pass gates.
 
-`UNIQUE (alert_id, leak_id)` on `alert_events` makes delivery idempotent: a retry or a
-duplicate queue message cannot notify the same person about the same leak twice.
+### Summaries and incident types come from the listing
 
-### Extraction is pluggable
+A listing's summary is the prose the leak site printed under that victim, cut from the page
+text between its anchor and the next listing's. Its incident types are multi-valued and each
+one needs evidence: the source (Ransomware), a stated size (Data Breach), the status
+(`published` → Data Leak, `sold` → Sale, `countdown`/`negotiating` → Extortion), or words in
+the summary. A row with no description gets one composed from its fields, marked as such.
 
-`RulesExtractor` is the default and needs no ML stack — the pipeline and its tests run on a
-clean install. `GlinerExtractor` sits behind the `ml` extra (torch, ~2 GB) and is imported
-lazily, so nothing loads torch unless you ask for it.
+### Extraction is rules, not a model
+
+`RulesExtractor` finds names, domains, dates, sizes and status words with patterns, and
+country and sector with word lists. There is no ML stack: nothing to download, no GPU, and
+the same input always produces the same leaks.
 
 ### One origin in the browser
 
-Dev: Vite proxies `/api`. Production: nginx proxies `/api` to the API container. Either way
+Dev: Vite proxies `/api`. Production: the API serves the built app itself
+(`src/plugins/web.ts`), so the page and `/api` come from the same process. Either way
 the browser talks to exactly one origin — no CORS preflight, and the session cookie stays
 first-party. This is why no component contains a hostname.
 
@@ -220,8 +229,9 @@ first-party. This is why no component contains a hostname.
 ```
 sources ──┬──< crawl_runs
           ├──< raw_pages
-          └──< leaks >──< alert_events >──< alerts >── user
+          └──< leaks ─ ─ domain_enrichment   (joined on victim_domain)
 
+iocs ─ ─ domain_enrichment                   (joined on host, WHOIS only)
 crawl_requests   (standalone — the API writes, the worker claims)
 ```
 
@@ -231,9 +241,11 @@ crawl_requests   (standalone — the API writes, the worker claims)
 | `crawl_runs` | One row per attempt — provenance |
 | `crawl_requests` | Syncs asked for by a person; the API/worker handoff |
 | `raw_pages` | Fetched text + `content_sha256` (the short-circuit) |
-| `leaks` | The canonical entity |
-| `alerts` | Typed match rules, owner-scoped |
-| `alert_events` | Deliveries, unique per (alert, leak) |
+| `leaks` | The canonical entity, with `summary` and `incident_types` |
+| `domain_enrichment` | WHOIS, DNS, site status and stack, per domain |
+| `iocs` | Indicators from public feeds (URLhaus, ThreatFox, TweetFeed) |
+| `mobile_numbers` | Scam phone numbers found in public posts — one row per number per post |
+| `hunt_jobs` / `hunt_findings` | On-demand company lookups from Search |
 | `user` / `session` / `account` / `verification` | Better Auth |
 
 Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.source_id` is
@@ -245,7 +257,7 @@ Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.sourc
 
 | Layer | Choice | Why |
 |---|---|---|
-| Database | PostgreSQL 18 | Real constraints; the original bug was a missing one |
+| Database | PostgreSQL 18 | Real constraints — dedupe is a unique index, not a convention |
 | ORM | Drizzle | Generated types shared with the API; SQL stays visible |
 | API | Fastify 5 | Schema validation and serialisation built in |
 | Auth | Better Auth | Lucia is deprecated, Auth.js frozen |
@@ -254,7 +266,7 @@ Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.sourc
 | Charts | Recharts | Themeable straight from CSS custom properties |
 | Crawling | httpx + Playwright | Async, and one persistent browser context |
 | Parsing | selectolax | ~10–30× faster than BeautifulSoup |
-| Extraction | rules, or GLiNER | Zero-shot: no training data to maintain |
+| Extraction | Pattern rules | Deterministic, no model to host or train |
 | Queue | arq | Async-native, cron built in, no separate beat |
 
 ---
@@ -264,7 +276,9 @@ Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.sourc
 **Extraction quality on dense pages.** The linker assumes "a victim span opens a record,
 following attributes attach to it". That holds for a page with a handful of listings; an
 index page with hundreds loses its boundaries once flattened to text, and attributes attach
-to the wrong victim. The fix is per-listing DOM segmentation. See ROADMAP.md.
+to the wrong victim — and summaries, which are cut along the same boundaries, inherit the
+error. The fix is per-listing DOM segmentation. LockBit 5.0's layout is the clearest case:
+its index yields almost no listings.
 
 **Location and sector are inferred, not reported.** No leak site publishes either as a
 field. `victim_country` comes from a gazetteer match on the listing text, or — far more
@@ -279,11 +293,9 @@ comes back empty, so the wave containing the end always over-fetches. `intel run
 count; lower `CRAWL_PAGE_CONCURRENCY` for sources that are much shallower than their
 `max_pages`.
 
-**Sources decay.** Of 83 legacy URLs probed on 2026-08-14, 30 responded. Leak sites rotate
-addresses and get seized. `consecutive_failures` surfaces this on the Sources page.
+**Sources decay.** Leak sites rotate addresses, get seized, or put a DDoS queue in front of
+the listing. `consecutive_failures` surfaces this on the Sources page.
 
-**No sign-up gate.** Anyone who can reach the app can create an account. Set
-`disableSignUp: true` in `apps/api/src/auth.ts` before exposing it beyond localhost.
-
-**Notifications are recorded, not sent.** `alert_events` rows are written with
-`status: pending`; no SMTP delivery is wired up yet.
+**Marketplaces and forums are out of scope.** The schema and extractor are built for
+ransomware victim disclosure. A drug market or a forum crawled with them produces noise, and
+most sit behind an access queue or a login anyway.

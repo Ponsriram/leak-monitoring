@@ -1,13 +1,9 @@
-"""arq worker: scheduled crawls, on-demand crawls, and event-driven alert matching.
+"""arq worker: scheduled crawls, on-demand crawls, enrichment and indicator feeds.
 
-Three things this replaces:
-
-* The manual notebook run — crawls are now scheduled.
-* The API's `monitorCollection()` loop, which re-scanned the entire collection every five
-  seconds looking for alert matches. Matching here is driven by *new leaks only*, so cost is
-  proportional to what actually arrived rather than to how long the process has been up.
-* "Wait for the top of the hour" as the only way to refresh anything. `drain_crawl_requests`
-  picks up what the UI's Sync button queued, within seconds.
+* Crawls run on a schedule — each source on its own interval.
+* `drain_crawl_requests` picks up what the UI's Sync button queued, within seconds.
+* The enrichment sweep and the feed fetches run on their own crons, off the crawl lock:
+  IOC feeds hourly, ransomware.live every 15 minutes, scam-number reports every 30.
 
 Run with:  arq intel.tasks.WorkerSettings
 """
@@ -23,7 +19,15 @@ from arq.connections import RedisSettings
 from .config import get_settings
 from .enrich import enrich_client
 from .enrich_sweep import sweep_domains
-from .feeds import fetch_threatfox, fetch_urlhaus
+from .feeds import (
+    ScamReport,
+    fetch_mastodon_reports,
+    fetch_ransomware_live,
+    fetch_reddit_reports,
+    fetch_threatfox,
+    fetch_tweetfeed,
+    fetch_urlhaus,
+)
 from .hunt import run_hunt
 from .logging import configure_logging
 from .pipeline import crawl_source, run_pipeline, run_pipeline_locked
@@ -66,17 +70,11 @@ async def crawl_all(ctx: dict[str, Any]) -> dict[str, int | str]:
 async def crawl_due(ctx: dict[str, Any]) -> dict[str, int | str]:
     """The scheduled sweep: crawl only the sources whose own interval has elapsed.
 
-    This is the job the cron below runs, and the fix for the thing that made "auto-fetching"
-    look broken. The schedule used to be one hourly `crawl_all`, which meant two wrong
-    behaviours at once: `sources.crawl_interval_seconds` was written by every operator and
-    read by nobody, so a source configured to refresh every 15 minutes refreshed hourly; and
-    every other source was refetched on that same hour whether or not its interval had
-    elapsed, so an already-long job spent most of its time re-reading pages whose content
-    hash was about to match.
+    This is the job the cron below runs. Each source refreshes on its own
+    `crawl_interval_seconds`, and nothing is refetched before its interval has elapsed.
 
-    Sweeping every few minutes and crawling only what is due inverts that: the tick is cheap
-    when nothing is due, and a source's configured cadence is finally the thing that decides
-    when it runs.
+    Sweeping every few minutes and crawling only what is due keeps the tick cheap when
+    nothing is due, and a source's configured cadence is what decides when it runs.
     """
     result = await run_pipeline_locked(
         storage=ctx["storage"], settings=ctx["settings"], only_due=True
@@ -247,6 +245,8 @@ async def enrich_domains(ctx: dict[str, Any]) -> dict[str, int]:
         "attempted": result.attempted,
         "enriched": result.enriched,
         "failed": result.failed,
+        "ioc_hosts": result.ioc_hosts,
+        "ioc_lookups": result.ioc_lookups,
     }
 
 
@@ -265,7 +265,11 @@ async def fetch_feeds(ctx: dict[str, Any]) -> dict[str, Any]:
         return {"skipped": "FEEDS_ENABLED is off"}
 
     storage: Storage = ctx["storage"]
-    collectors = {"urlhaus": fetch_urlhaus, "threatfox": fetch_threatfox}
+    collectors = {
+        "urlhaus": fetch_urlhaus,
+        "threatfox": fetch_threatfox,
+        "tweetfeed": fetch_tweetfeed,
+    }
     summary: dict[str, Any] = {}
 
     async with enrich_client() as client:
@@ -305,6 +309,95 @@ async def fetch_feeds(ctx: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+async def fetch_ransomware_feed(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Pull ransomware.live's most recent victims into `leaks`.
+
+    Every 15 minutes rather than hourly with the indicator feeds: the endpoint returns the
+    newest 100 victims, and a group posting a batch of forty would push earlier victims out
+    of that window between two hourly runs. It is one small JSON request.
+
+    New victims go through alert matching exactly as crawled ones do — an alert on a company
+    name must fire whichever route the listing arrived by.
+    """
+    settings = ctx["settings"]
+    if not settings.feeds_enabled:
+        return {"skipped": "FEEDS_ENABLED is off"}
+
+    storage: Storage = ctx["storage"]
+    try:
+        async with enrich_client() as client:
+            leaks = await fetch_ransomware_live(client)
+    except Exception as exc:  # noqa: BLE001 - a feed outage is logged, not raised
+        log.warning("ransomware.live fetch failed", error=str(exc))
+        return {"error": str(exc)[:200]}
+
+    result = await storage.upsert_leaks(leaks, source_id=None)
+    events = await storage.match_alerts(result.new_leak_ids)
+    log.info(
+        "ransomware.live stored",
+        new=result.inserted,
+        seen_again=result.updated,
+        alert_events=events,
+    )
+    return {"new": result.inserted, "seen_again": result.updated, "alert_events": events}
+
+
+async def fetch_mobile_reports(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Collect scam phone-number reports from public posts into `mobile_numbers`.
+
+    Each platform is isolated, as the indicator feeds are: Reddit rate-limiting us must not
+    discard what Mastodon returned.
+    """
+    settings = ctx["settings"]
+    if not (settings.feeds_enabled and settings.mobile_enabled):
+        return {"skipped": "FEEDS_ENABLED or MOBILE_ENABLED is off"}
+
+    storage: Storage = ctx["storage"]
+    summary: dict[str, Any] = {}
+
+    async with enrich_client() as client:
+        collectors = {
+            "mastodon": lambda: fetch_mastodon_reports(
+                client,
+                instance=settings.mobile_mastodon_instance,
+                tags=settings.mobile_mastodon_tags,
+            ),
+            "reddit": lambda: fetch_reddit_reports(client, subreddits=settings.mobile_subreddits),
+        }
+        for name, collect in collectors.items():
+            try:
+                reports = await collect()
+                new, updated = await storage.upsert_mobile_reports(
+                    [_report_row(report) for report in reports]
+                )
+                summary[name] = {"new": new, "seen_again": updated}
+            except Exception as exc:  # noqa: BLE001 - one platform must not stop the other
+                log.warning("mobile report fetch failed", source=name, error=str(exc))
+                summary[name] = {"error": str(exc)[:200]}
+
+    log.info("mobile reports fetched", **{k: str(v) for k, v in summary.items()})
+    return summary
+
+
+def _report_row(report: ScamReport) -> dict[str, Any]:
+    return {
+        "number": report.number.e164,
+        "number_display": report.number.display,
+        "number_raw": report.number.raw,
+        "region_code": report.number.region_code,
+        "country": report.number.country,
+        "line_type": report.number.line_type,
+        "threat_types": report.threat_types,
+        "target_audience": report.target_audience,
+        "details": report.details,
+        "source": report.source,
+        "source_url": report.source_url,
+        "author": report.author,
+        "language": report.language,
+        "reported_at": report.reported_at,
+    }
+
+
 async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
     """Crawl a single source. Enqueued ad hoc, or by a per-source schedule."""
     storage: Storage = ctx["storage"]
@@ -329,8 +422,8 @@ async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
 async def match_alerts(ctx: dict[str, Any], leak_ids: list[int]) -> dict[str, int]:
     """Match new leaks against alert rules and record deliveries.
 
-    Only the leaks passed in are considered — this is the inversion of the old five-second
-    full-collection scan. The matching itself lives in `Storage.match_alerts` so the CLI and
+    Only the leaks passed in are considered, so cost follows what arrived rather than the
+    size of the table. The matching itself lives in `Storage.match_alerts` so the CLI and
     the crawl pipeline run the same matcher rather than a second copy of the SQL.
     """
     storage: Storage = ctx["storage"]
@@ -367,6 +460,8 @@ class WorkerSettings:
         drain_hunt_jobs,
         enrich_domains,
         fetch_feeds,
+        fetch_mobile_reports,
+        fetch_ransomware_feed,
         match_alerts,
     ]
     on_startup = startup
@@ -420,6 +515,21 @@ class WorkerSettings:
             fetch_feeds,
             minute={34},
             timeout=_settings.job_timeout_seconds,
+            max_tries=1,
+        ),
+        # ransomware.live every 15 minutes, clear of the crawl sweep's and the feeds' minutes.
+        cron(
+            fetch_ransomware_feed,
+            minute={9, 24, 39, 54},
+            timeout=_settings.hunt_timeout_seconds,
+            max_tries=1,
+        ),
+        # Scam-number reports every 30 minutes: one request per hashtag and subreddit, and
+        # public timelines move on the order of minutes.
+        cron(
+            fetch_mobile_reports,
+            minute={14, 44},
+            timeout=_settings.hunt_timeout_seconds,
             max_tries=1,
         ),
     ]

@@ -1,7 +1,7 @@
 """Normalizer tests.
 
-`parse_date` is the highest-value function in the codebase to get right: storing dates as
-free text is what made the old weekly chart return an empty array for months.
+`parse_date` is the highest-value function in the codebase to get right: a date stored as
+free text matches no date range, and every time-based chart goes silently empty.
 """
 
 from __future__ import annotations
@@ -107,9 +107,8 @@ def test_parses_status(raw: str | None, expected: str) -> None:
 def test_status_field_outranks_a_passing_mention() -> None:
     """An explicit status field beats a word used in the description.
 
-    The old resolver returned whichever pattern was listed first, so `sold` — checked
-    before `published` — won on a listing whose description merely said "purchased" and
-    whose own status line said published.
+    Pattern order must not decide it: `sold` must not win on a listing whose description
+    merely says "purchased" and whose own status line says published.
     """
     assert (
         resolve_status(["Status: published", "the buyer found the data useful"]) == "published"

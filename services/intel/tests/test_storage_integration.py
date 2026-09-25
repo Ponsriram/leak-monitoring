@@ -63,14 +63,9 @@ async def group(storage: Storage):  # type: ignore[no-untyped-def]
 async def source_id(storage: Storage):  # type: ignore[no-untyped-def]
     """A throwaway source row, cleaned up afterwards.
 
-    This test used to take `list_sources()[0]` and skip when the table was empty. CI's
-    Python job applies migrations but never seeds — only the API job does — so the table
-    was always empty there and the test always skipped. The workflow then has a step that
-    treats *any* skip as proof Postgres was unreachable, which turned a fixture assumption
-    into a hard CI failure that looked like a database outage.
-
-    Owning its fixture makes the test hermetic and makes that guard's assumption true
-    again: from here, a skip really does mean the database was unreachable.
+    CI's Python job applies migrations but never seeds, and its workflow treats any skip as
+    proof Postgres was unreachable. Owning its fixture makes the test hermetic, so a skip
+    really does mean the database was unreachable.
     """
     row = await storage._pool.fetchrow(  # noqa: SLF001 - test fixture
         "insert into sources (slug, name, base_url) values ($1, $1, $2) returning id",
@@ -98,7 +93,7 @@ def make_leak(group: str, victim: str = "Northwind Logistics", **kwargs: object)
 
 
 async def test_insert_then_reinsert_does_not_duplicate(storage: Storage, group: str) -> None:
-    """The defect that made the old pipeline double the dataset on every run."""
+    """Re-running a crawl must refresh rows, never duplicate them."""
     leak = make_leak(group)
 
     first = await storage.upsert_leaks([leak], source_id=None)
@@ -157,6 +152,59 @@ async def test_upsert_does_not_null_out_known_fields(storage: Storage, group: st
     )
     assert row["leak_size_bytes"] == 1024
     assert row["published_at_raw"] == "2026-02-10"
+
+
+async def test_summary_survives_and_types_accumulate(storage: Storage, group: str) -> None:
+    """A re-crawl whose listing window came out empty must not blank the description, and
+    a type seen once stays — the same never-downgrade rule as `status`."""
+    await storage.upsert_leaks(
+        [
+            make_leak(
+                group,
+                summary="Northwind moves freight across the northern ports.",
+                incident_types=["ransomware", "data_leak"],
+            )
+        ],
+        source_id=None,
+    )
+    later = make_leak(group, incident_types=["ransomware", "sale"])
+    await storage.upsert_leaks([later], source_id=None)
+
+    row = await storage._pool.fetchrow(  # noqa: SLF001
+        "select summary, incident_types from leaks where dedupe_hash = $1",
+        later.dedupe_hash,
+    )
+    assert row["summary"] == "Northwind moves freight across the northern ports."
+    assert sorted(row["incident_types"]) == ["data_leak", "ransomware", "sale"]
+
+
+async def test_backfill_writes_descriptions_onto_existing_rows(
+    storage: Storage, group: str
+) -> None:
+    leak = make_leak(group, incident_types=["ransomware"])
+    await storage.upsert_leaks([leak], source_id=None)
+
+    written = await storage.apply_descriptions(
+        [
+            (leak.dedupe_hash, "A regional freight operator.", ["ransomware", "hacked"]),
+            ("no-such-hash", "Never stored.", ["sale"]),
+        ]
+    )
+    assert written == 1
+
+    row = await storage._pool.fetchrow(  # noqa: SLF001
+        "select summary, incident_types from leaks where dedupe_hash = $1", leak.dedupe_hash
+    )
+    assert row["summary"] == "A regional freight operator."
+    assert sorted(row["incident_types"]) == ["hacked", "ransomware"]
+
+    # A second pass with nothing to say leaves it alone.
+    await storage.apply_descriptions([(leak.dedupe_hash, None, [])])
+    again = await storage._pool.fetchrow(  # noqa: SLF001
+        "select summary, incident_types from leaks where dedupe_hash = $1", leak.dedupe_hash
+    )
+    assert again["summary"] == "A regional freight operator."
+    assert sorted(again["incident_types"]) == ["hacked", "ransomware"]
 
 
 async def test_unusable_leaks_are_skipped_not_inserted(storage: Storage, group: str) -> None:

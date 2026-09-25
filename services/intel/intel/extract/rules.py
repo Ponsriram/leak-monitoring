@@ -1,12 +1,10 @@
 """Deterministic extractor. No model, no download, no GPU.
 
-This is the default so the pipeline works the moment it is installed, and so the linker and
-storage layers can be tested without an ML dependency. It is genuinely useful, not a stub:
-leak-site listings are highly templated, and dates, sizes and domains are regular enough
+Leak-site listings are highly templated, and dates, sizes and domains are regular enough
 that patterns catch most of them.
 
-Where it is weak is exactly where a model earns its place: identifying an organisation name
-in prose that carries no domain. Run `GlinerExtractor` for that.
+Where it is weak is identifying an organisation name in prose that carries no domain: a
+name needs a legal suffix or a nearby domain before it is accepted (see `extract`).
 """
 
 from __future__ import annotations
@@ -70,6 +68,30 @@ _ORG_SUFFIX = re.compile(
 )
 
 
+# A field label whose value is never the victim's name. Listings that label every field
+# ("Company: | Aztec Software | Industry: | Engineering Software") otherwise hand the
+# industry value to the org pattern as a second, Title Case, domain-adjacent victim.
+_NON_VICTIM_LABEL = re.compile(
+    r"\b(?:industry|sector|type|category|country|geo|location|revenue|status|gdpr)\s*:",
+    re.I,
+)
+
+
+def _follows_non_victim_label(text: str, start: int) -> bool:
+    """Is the line holding `start` the value of a non-victim field?
+
+    Judged from the start of the line, not the match: an org match can begin mid-value
+    ("Industry: Spa and Salon Management" yields "Salon Management").
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    # "Industry: Business Services" on one line.
+    if _NON_VICTIM_LABEL.match(text, line_start):
+        return True
+    # "Industry:" on the line above, as `to_text` renders separate elements.
+    previous = text[max(0, line_start - 40) : line_start].rstrip()
+    label = _NON_VICTIM_LABEL.search(previous)
+    return label is not None and label.end() == len(previous)
+
 # How far from a victim or a domain a country or sector mention may sit and still be read
 # as belonging to that listing.
 #
@@ -120,6 +142,8 @@ class RulesExtractor:
                 continue
             if not _is_plausible_org(candidate):
                 continue
+            if _follows_non_victim_label(text, match.start()):
+                continue
             # Require some corroboration: a legal suffix, or a domain within 120 characters.
             # Without this every capitalised sentence opener becomes a victim.
             window = text[max(0, match.start() - 120) : match.end() + 120]
@@ -154,9 +178,9 @@ class RulesExtractor:
 
 # Words that appear in page furniture but never inside a victim's registered name.
 #
-# The additions below came from the first real crawl: a live LockBit mirror yielded
-# "How To Buy Bitcoin", "File Name" and "Affiliate Rules" as victims — navigation links and
-# a table header. Every term here was observed on an actual page, not guessed.
+# Navigation links and table headers such as "How To Buy Bitcoin", "File Name" and
+# "Affiliate Rules" read as victims otherwise. Every term here was observed on an actual
+# page, not guessed.
 _NOT_AN_ORG = frozenset(
     {
         # disclosure vocabulary
@@ -171,6 +195,7 @@ _NOT_AN_ORG = frozenset(
         "news", "blog", "contact", "about", "home", "archive", "disclosures",
         "rules", "affiliate", "affiliates", "how", "faq", "help", "support",
         "search", "login", "register", "menu", "index", "list", "all", "full",
+        "more",  # "Read More", "Learn More", "Show More" buttons on every card
         "terms", "policy", "privacy", "mirror", "mirrors", "onion", "tor",
         # payment / negotiation chrome
         "bitcoin", "btc", "monero", "xmr", "buy", "payment", "pay", "wallet",

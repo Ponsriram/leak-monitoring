@@ -53,18 +53,15 @@ class Settings(BaseSettings):
     # --- crawl politeness ---
     request_timeout_seconds: int = Field(default=60, alias="CRAWL_TIMEOUT")
     max_retries: int = Field(default=4, alias="CRAWL_RETRIES")
-    # First retry delay, doubling up to the cap. The old backoff was 2s/4s/8s, which is far
-    # shorter than a Tor rendezvous circuit takes to rebuild — so every retry reused a path
-    # that had just failed and the crawler gave up on sites that were merely slow.
+    # First retry delay, doubling up to the cap. Long on purpose: a Tor rendezvous circuit
+    # takes this long to rebuild, and a shorter wait retries on the path that just failed.
     retry_backoff_seconds: int = Field(default=15, alias="CRAWL_RETRY_BACKOFF")
     retry_backoff_cap_seconds: int = Field(default=120, alias="CRAWL_RETRY_BACKOFF_CAP")
-    # How many sources to crawl at once. The old crawler was strictly sequential, so 83
-    # sources at ~20s per page took many hours per cycle.
+    # How many sources to crawl at once.
     concurrency: int = Field(default=4, alias="CRAWL_CONCURRENCY")
 
-    # How many pages of ONE source may be in flight together. Pages used to be walked
-    # strictly in order, so a ten-page listing cost ten sequential Tor round trips whatever
-    # the cross-source concurrency was. See `intel.scheduling.page_waves`.
+    # How many pages of ONE source may be in flight together, so a ten-page listing does not
+    # cost ten sequential Tor round trips. See `intel.scheduling.page_waves`.
     page_concurrency: int = Field(default=4, alias="CRAWL_PAGE_CONCURRENCY")
     # Ceiling on how large a single wave of simultaneous requests to one site may grow.
     page_wave_cap: int = Field(default=16, alias="CRAWL_PAGE_WAVE_CAP")
@@ -101,6 +98,11 @@ class Settings(BaseSettings):
     # How long an enrichment row stays usable before the sweep refreshes it. A day: WHOIS
     # barely moves, and site status is the only genuinely volatile field.
     enrich_max_age_seconds: int = Field(default=86400, alias="ENRICH_MAX_AGE")
+    # Indicator hosts get WHOIS only (see `enrich_sweep`), a batch per tick alongside the
+    # victim domains. Refreshed weekly: there are thousands of them, and a registration
+    # record does not change on the timescale a site's status does.
+    enrich_ioc_batch_size: int = Field(default=24, alias="ENRICH_IOC_BATCH")
+    enrich_ioc_max_age_seconds: int = Field(default=7 * 86400, alias="ENRICH_IOC_MAX_AGE")
 
     # --- indicator feeds ---
     # Whether to fetch public IOC feeds at all. Off is a legitimate posture: it is outbound
@@ -110,8 +112,35 @@ class Settings(BaseSettings):
     # it on the first run would stamp thousands of old indicators as arriving at once.
     feeds_max_entries: int = Field(default=4000, alias="FEEDS_MAX_ENTRIES")
 
-
-
+    # --- scam phone-number reports (Bulk Intelligence · Mobile Number) ---
+    # Public posts people write about numbers that scammed them, read from Mastodon hashtag
+    # timelines and subreddit RSS. Governed by FEEDS_ENABLED as well: it is the same kind of
+    # timed outbound traffic.
+    mobile_enabled: bool = Field(default=True, alias="MOBILE_ENABLED")
+    # Any Mastodon server works; mastodon.social serves public tag timelines without a login
+    # and sees posts federated from every other server.
+    mobile_mastodon_instance: str = Field(
+        default="https://mastodon.social", alias="MOBILE_MASTODON_INSTANCE"
+    )
+    mobile_mastodon_tags: list[str] = Field(
+        default=[
+            "scam",
+            "scammer",
+            "scammers",
+            "scamcall",
+            "scamcalls",
+            "phonescam",
+            "smishing",
+            "vishing",
+            "scamalert",
+            "spamcall",
+            "textscam",
+            "whatsappscam",
+            "fraud",
+        ],
+        alias="MOBILE_MASTODON_TAGS",
+    )
+    mobile_subreddits: list[str] = Field(default=["Scams"], alias="MOBILE_SUBREDDITS")
 
     # --- mirror discovery ---
     # Record onion addresses mentioned on crawled pages. Recording is always safe; it is

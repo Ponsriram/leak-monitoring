@@ -394,20 +394,18 @@ class Storage:
                         dedupe_hash, victim_name, victim_domain, victim_country,
                         victim_sector, actor_group, source_id, source_url,
                         published_at, published_at_raw, first_seen_at, last_seen_at,
-                        status, leak_type, leak_size_bytes, extraction
+                        status, leak_type, leak_size_bytes, extraction,
+                        summary, incident_types
                     )
                     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,
-                            $12::leak_status,$13,$14,$15::jsonb)
+                            $12::leak_status,$13,$14,$15::jsonb,$16,$17::text[])
                     on conflict (dedupe_hash) do update set
                         -- first_seen_at is deliberately absent.
                         last_seen_at = excluded.last_seen_at,
                         victim_name = coalesce(excluded.victim_name, leaks.victim_name),
                         victim_domain = coalesce(excluded.victim_domain, leaks.victim_domain),
-                        -- These two were written on insert and never refreshed, so every
-                        -- row that predates location and sector extraction would have kept
-                        -- its nulls forever however many times it was re-crawled. Coalesced
-                        -- like the rest: a later extraction can fill them in, and a sparser
-                        -- one cannot blank them.
+                        -- Coalesced like the rest: a later extraction can fill them in, and
+                        -- a sparser one cannot blank them.
                         victim_country = coalesce(excluded.victim_country, leaks.victim_country),
                         victim_sector = coalesce(excluded.victim_sector, leaks.victim_sector),
                         published_at = coalesce(excluded.published_at, leaks.published_at),
@@ -416,13 +414,11 @@ class Storage:
                         ),
                         -- Never downgrade a known status to 'unknown'.
                         --
-                        -- This was an unconditional `= excluded.status` while every other
-                        -- mutable column used coalesce. Extraction only reruns when a page's
-                        -- content hash changes, so an edit anywhere on the page re-derived
-                        -- every listing on it — and any listing whose status wording moved
-                        -- out of the extractor's reach silently reverted from 'published'
-                        -- to 'unknown'. A real state change still writes through, because
-                        -- that arrives as a status other than 'unknown'.
+                        -- An edit anywhere on a page re-derives every listing on it, and a
+                        -- listing whose status wording moved out of the extractor's reach
+                        -- would otherwise revert from 'published' to 'unknown'. A real state
+                        -- change still writes through, because that arrives as a status
+                        -- other than 'unknown'.
                         status = case
                             when excluded.status = 'unknown'::leak_status then leaks.status
                             else excluded.status
@@ -431,6 +427,16 @@ class Storage:
                             excluded.leak_size_bytes, leaks.leak_size_bytes
                         ),
                         source_url = coalesce(excluded.source_url, leaks.source_url),
+                        -- Coalesced like the victim fields: a re-crawl whose window came out
+                        -- empty (the listing below it moved) must not blank a description.
+                        summary = coalesce(excluded.summary, leaks.summary),
+                        -- A union, on the same never-downgrade rule as `status`: a type is
+                        -- evidence that was on the page at some point, and a listing does
+                        -- not stop having been published because the wording moved.
+                        incident_types = array(
+                            select distinct t
+                              from unnest(leaks.incident_types || excluded.incident_types) t
+                        ),
                         extraction = excluded.extraction,
                         updated_at = now()
                     returning (xmax = 0) as was_inserted, id
@@ -450,6 +456,8 @@ class Storage:
                     leak.leak_type,
                     leak.leak_size_bytes,
                     leak.extraction.model_dump_json(),
+                    leak.summary,
+                    leak.incident_types,
                 )
 
                 if row is not None and row["was_inserted"]:
@@ -505,6 +513,71 @@ class Storage:
             """
         )
         return [(row["source_id"], row["slug"], row["text"]) for row in rows]
+
+    async def iter_raw_pages(self, *, batch: int = 50):  # type: ignore[no-untyped-def]
+        """Every stored page, oldest first, as (slug, url, page_no, text).
+
+        Batched by id rather than fetched at once: page text runs to hundreds of kilobytes
+        for the larger sites, and the whole table does not need to sit in memory to be read
+        once in order.
+        """
+        last_id = 0
+        while True:
+            rows = await self._pool.fetch(
+                """
+                select r.id, s.slug, r.url, r.page_no, r.text
+                  from raw_pages r
+                  join sources s on s.id = r.source_id
+                 where r.id > $1
+                 order by r.id
+                 limit $2
+                """,
+                last_id,
+                batch,
+            )
+            if not rows:
+                return
+            for row in rows:
+                yield row["slug"], row["url"], row["page_no"], row["text"]
+            last_id = rows[-1]["id"]
+
+    async def apply_descriptions(self, updates: list[tuple[str, str | None, list[str]]]) -> int:
+        """Write (dedupe_hash, summary, incident_types) onto existing leaks. Returns rows hit.
+
+        The same merge rules as the upsert — a newer summary replaces an older one but a
+        missing one never blanks it, and types only accumulate — so running the backfill
+        twice, or after a crawl has already written these, changes nothing.
+        """
+        if not updates:
+            return 0
+        return await self._pool.fetchval(
+            """
+            with incoming as (
+                select * from unnest($1::text[], $2::text[], $3::text[])
+                    as u(dedupe_hash, summary, types_csv)
+            ),
+            u as (
+                update leaks l
+                   set summary = coalesce(i.summary, l.summary),
+                       incident_types = array(
+                           select distinct t from unnest(
+                               l.incident_types
+                               || coalesce(string_to_array(nullif(i.types_csv, ''), ','), '{}')
+                           ) t
+                       ),
+                       updated_at = now()
+                  from incoming i
+                 where l.dedupe_hash = i.dedupe_hash
+                returning 1
+            )
+            select count(*) from u
+            """,
+            # Types go over as comma-joined text: asyncpg cannot bind a ragged text[][], and
+            # a type slug never contains a comma.
+            [hash_ for hash_, _, _ in updates],
+            [summary for _, summary, _ in updates],
+            [",".join(types) for _, _, types in updates],
+        )
 
     async def repair_victim_domain(
         self, *, actor_group: str, victim_name: str, victim_domain: str, new_hash: str
@@ -567,8 +640,7 @@ class Storage:
         """Match the given leaks against every enabled alert. Returns events created.
 
         Lives here rather than in `tasks.py` so the CLI and the scheduled worker run exactly
-        the same matcher — previously this SQL was only reachable from an arq task that
-        nothing ever enqueued, so no alert had ever fired.
+        the same matcher.
 
         Matching is expressed as SQL over typed matchers, never a regex built from user
         input: an alert's `match_kind` is one of four fixed behaviours, so there is no
@@ -838,8 +910,7 @@ class Storage:
         """Fail requests left `running` by a worker that died mid-crawl.
 
         Without this a killed worker leaves a request permanently at "running", and the UI
-        polling it shows a sync that never ends — the same class of lie as the `crawl_runs`
-        rows that used to be abandoned in 'running'.
+        polling it shows a sync that never ends.
         """
         return await self._pool.fetchval(
             """
@@ -1190,6 +1261,88 @@ class Storage:
     async def count_iocs(self) -> int:
         return await self._pool.fetchval("select count(*)::int from iocs")
 
+    # ---------- scam phone-number reports ----------
+
+    async def upsert_mobile_reports(self, reports: list[dict[str, Any]]) -> tuple[int, int]:
+        """Insert scam-number reports, refreshing ones already held. Returns (new, updated).
+
+        Identity is (number, source_url) — one number in one post. The same shape as
+        `upsert_iocs`, for the same reasons: one jsonb document so the per-row arrays survive
+        the trip, `distinct on` so a post fetched under two hashtags cannot hit one row twice
+        in one statement, and `first_seen_at` written once.
+
+        `details` is replaced rather than coalesced: it is the post's full text, and a post
+        edited after we first read it is more current, not less.
+        """
+        if not reports:
+            return (0, 0)
+
+        payload = json.dumps(
+            [
+                {
+                    "number": item["number"],
+                    "number_display": item["number_display"],
+                    "number_raw": item["number_raw"],
+                    "region_code": item.get("region_code"),
+                    "country": item.get("country"),
+                    "line_type": item.get("line_type"),
+                    "threat_types": item["threat_types"],
+                    "target_audience": item["target_audience"],
+                    "details": item["details"],
+                    "source": item["source"],
+                    "source_url": item["source_url"],
+                    "author": item.get("author"),
+                    "language": item.get("language"),
+                    "reported_at": (
+                        item["reported_at"].isoformat() if item.get("reported_at") else None
+                    ),
+                }
+                for item in reports
+            ]
+        )
+
+        inserted = await self._pool.fetchval(
+            """
+            with raw as (
+                select * from jsonb_to_recordset($1::jsonb) as t(
+                    number text, number_display text, number_raw text, region_code text,
+                    country text, line_type text, threat_types text[],
+                    target_audience text[], details text, source text, source_url text,
+                    author text, language text, reported_at timestamptz
+                )
+            ),
+            input as (
+                select distinct on (number, source_url) *
+                  from raw
+                 order by number, source_url, reported_at desc nulls last
+            ),
+            upserted as (
+                insert into mobile_numbers (
+                    number, number_display, number_raw, region_code, country, line_type,
+                    threat_types, target_audience, details, source, source_url, author,
+                    language, reported_at
+                )
+                select number, number_display, number_raw, region_code, country, line_type,
+                       threat_types, target_audience, details, source, source_url, author,
+                       language, reported_at
+                  from input
+                on conflict (number, source_url) do update set
+                    threat_types    = excluded.threat_types,
+                    target_audience = excluded.target_audience,
+                    details         = excluded.details,
+                    author          = coalesce(excluded.author, mobile_numbers.author),
+                    language        = coalesce(excluded.language, mobile_numbers.language),
+                    reported_at     = coalesce(excluded.reported_at, mobile_numbers.reported_at),
+                    last_seen_at    = now()
+                returning (xmax = 0) as is_new
+            )
+            select count(*) filter (where is_new)::int from upserted
+            """,
+            payload,
+        )
+        new = inserted or 0
+        return (new, len(reports) - new)
+
     async def domains_needing_enrichment(
         self, *, limit: int, max_age_seconds: int
     ) -> list[str]:
@@ -1205,19 +1358,50 @@ class Storage:
         """
         rows = await self._pool.fetch(
             """
-            select distinct l.victim_domain as domain
+            select l.victim_domain as domain
               from leaks l
               left join domain_enrichment e on e.domain = l.victim_domain
              where l.victim_domain is not null
                and (e.checked_at is null
                     or e.checked_at < now() - make_interval(secs => $2))
-             order by domain
+             group by l.victim_domain, e.checked_at
+             order by e.checked_at nulls first, l.victim_domain
              limit $1
             """,
             limit,
             max_age_seconds,
         )
         return [row["domain"] for row in rows]
+
+    async def ioc_hosts_needing_whois(self, *, limit: int, max_age_seconds: int) -> list[str]:
+        """Indicator hosts with no WHOIS yet, or WHOIS old enough to refresh.
+
+        This is what the IOC table's WHOIS column joins on (`iocs.host`). Victim domains are
+        drawn separately, by `domains_needing_enrichment`.
+
+        Newest indicators first, so the rows the IOC page opens on are the first to fill.
+        IP indicators carry no host; a host that is itself an address is skipped too, since
+        RDAP here answers for domains.
+        """
+        rows = await self._pool.fetch(
+            """
+            select i.host
+              from iocs i
+              left join domain_enrichment e on e.domain = i.host
+             where i.host is not null
+               and i.host !~ '^[0-9.]+$'
+               and position(':' in i.host) = 0
+               and (e.checked_at is null
+                    or e.checked_at < now() - make_interval(secs => $2))
+             group by i.host, e.checked_at
+             order by e.checked_at nulls first,
+                      max(coalesce(i.reported_at, i.first_seen_at)) desc
+             limit $1
+            """,
+            limit,
+            max_age_seconds,
+        )
+        return [row["host"] for row in rows]
 
     async def upsert_domain_enrichment(self, domain: str, facts: dict[str, Any]) -> None:
         """Cache what the enrichers learned about a domain.

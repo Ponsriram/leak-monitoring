@@ -1,8 +1,7 @@
 """Dedupe-hash tests.
 
-The old pipeline had no key at all, so every run re-inserted the whole dataset. Later, the
-first version of the *seed script* reintroduced the same bug by folding a `now()`-derived
-timestamp into its hash. These tests exist so it cannot come back a third time.
+The hash is the upsert key. Anything clock-derived folded into it would re-insert the whole
+dataset on every run; these tests keep it stable.
 """
 
 from __future__ import annotations

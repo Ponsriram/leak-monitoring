@@ -1,17 +1,11 @@
 """Turn a flat list of entity spans into discrete leak records.
 
-This is the module that replaces five divergent copies of the same loop (`demo.py`,
-`demo1.py`, `DarkNer.ipynb`, `DarkNer-test.ipynb`, `Mapping.ipynb`). It is the most
-important piece of business logic in the project and previously had no canonical home and
-no test.
+This is the most important piece of business logic in the project. Two decisions keep it
+simple:
 
-Two changes make it dramatically simpler than the original:
-
-1. **Extraction is per page, not per corpus.** The old code ran one NER pass over a 1.2 MB
-   blob of every site concatenated together, then tried to reassociate entities by their
-   order in that blob. All the `orphan_entries` bookkeeping existed to cope with the
-   ambiguity that created. Per page, a victim span and the date next to it are
-   unambiguously related.
+1. **Extraction is per page, not per corpus.** Per page, a victim span and the date next to
+   it are unambiguously related; across a blob of every site concatenated together they are
+   not.
 
 2. **The actor group comes from the source, not from the text.** We know which site we
    crawled — guessing the group from prose was always redundant. A group span in the text
@@ -24,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..models import ExtractedLeak, ExtractionMeta, LeakStatus
+from .describe import classify_incident, clean_summary, listing_window
 from .gazetteer import resolve_country, resolve_sector
 from .normalize import extract_domain, parse_date, parse_size, resolve_status
 
@@ -37,8 +32,8 @@ class Label:
     DATE = "date"
     SIZE = "leak_size"
     STATUS = "status"
-    # Where the victim is and what it does. Both were columns on `leaks` from the first
-    # migration with nothing ever writing to them; these are the labels that fill them.
+    # Where the victim is and what it does — the labels that fill `victim_country` and
+    # `victim_sector`.
     LOCATION = "location"
     SECTOR = "sector"
 
@@ -72,6 +67,11 @@ class _Record:
     sector_raws: list[str] = field(default_factory=list)
     group_override: str | None = None
     confidences: list[float] = field(default_factory=list)
+    # Where the record's identifying spans sit on the page, so its description can be cut
+    # from the text around them.
+    victim_pos: tuple[int, int] | None = None
+    url_pos: tuple[int, int] | None = None
+    summary: str | None = None
 
 
 def link_spans(
@@ -82,6 +82,7 @@ def link_spans(
     page_no: int = 1,
     method: str = "rules",
     model_version: str | None = None,
+    page_text: str | None = None,
 ) -> list[ExtractedLeak]:
     """Group spans into leaks.
 
@@ -106,6 +107,9 @@ def link_spans(
     Dates, sizes and statuses keep the reading-order rule, because those genuinely do follow
     the name — including trailing prose ("…have been released.") that sits closer to the
     *next* victim than to its own, which is exactly the case nearest-span would get wrong.
+
+    When `page_text` is passed, each record also gets its summary: the prose between its
+    anchor and the next listing's (see `_attach_summaries`).
     """
     records: list[_Record] = []
     pending = _Record()  # attributes seen before the first victim span
@@ -129,7 +133,9 @@ def link_spans(
             case Label.VICTIM_URL:
                 # Don't let a second URL clobber the first — the first is the victim's own
                 # site; later ones are usually mirrors or the leak download link.
-                record.victim_url = record.victim_url or span.text
+                if record.victim_url is None:
+                    record.victim_url = span.text
+                    record.url_pos = (span.start, span.end)
             case Label.DATE:
                 record.date_raw = record.date_raw or span.text
             case Label.SIZE:
@@ -155,7 +161,11 @@ def link_spans(
             continue
 
         if span.label == Label.VICTIM:
-            current = _Record(victim_name=text, group_override=page_group)
+            current = _Record(
+                victim_name=text,
+                group_override=page_group,
+                victim_pos=(span.start, span.end),
+            )
             # Fold in anything that appeared before the first victim on this page.
             if not records and pending is not None:
                 current.date_raw = pending.date_raw
@@ -164,7 +174,7 @@ def link_spans(
                 current.location_raws.extend(pending.location_raws)
                 current.sector_raws.extend(pending.sector_raws)
                 current.confidences.extend(pending.confidences)
-                pending = _Record(victim_url=pending.victim_url)
+                pending = _Record(victim_url=pending.victim_url, url_pos=pending.url_pos)
             records.append(current)
             continue
 
@@ -183,10 +193,15 @@ def link_spans(
             continue
         attach(records[owner], span)
 
+    records = _merge_split_listings(records)
+
     # A page can carry a bare URL with no company name — still a real listing.
     if not records and (pending.victim_url or pending.date_raw):
         pending.group_override = page_group
         records.append(pending)
+
+    if page_text:
+        _attach_summaries(records, spans, page_text)
 
     leaks: list[ExtractedLeak] = []
     for record in records:
@@ -207,18 +222,85 @@ def link_spans(
     return leaks
 
 
+def _attach_summaries(records: list[_Record], spans: list[Span], text: str) -> None:
+    """Give each record the prose between its anchor and the next listing's.
+
+    The anchor is the record's link where it has one, its name otherwise. Links are the
+    best-placed span on these pages — they sit at the top of a listing — while a name span
+    can be a capitalised phrase lifted out of the previous listing's prose, which would
+    start the summary in the wrong listing.
+
+    For the same reason a name span only ends another listing's window when it is that
+    listing's anchor. Every link does, attached or not: an unextracted listing still ends
+    the one above it.
+    """
+    boundaries = sorted(
+        {anchor for record in records if (anchor := record.url_pos or record.victim_pos)}
+        | {(span.start, span.end) for span in spans if span.label == Label.VICTIM_URL}
+    )
+    for record in records:
+        anchor = record.url_pos or record.victim_pos
+        if anchor is None:
+            continue
+        # The record's other span is skipped as a boundary, and if it sits on a line of its
+        # own `clean_summary` drops it — so a name printed under its link neither ends the
+        # description nor opens it.
+        own = {pos for pos in (record.victim_pos, record.url_pos) if pos is not None}
+        window = listing_window(text, anchor=anchor, own=own, boundaries=boundaries)
+        record.summary = clean_summary(
+            window,
+            drop=(record.victim_name, record.victim_url, extract_domain(record.victim_url)),
+        )
+
+
 # Words that are a company-name *part*, never a company name. A listing rendered as
 # "Acme Holdings Ltd" can leave the extractor holding just "Ltd"; a table section headed
 # "Financial" becomes the name of every victim under it.
 _NAME_FRAGMENTS = frozenset(
     {
-        "inc", "llc", "ltd", "limited", "gmbh", "sa", "sas", "bv", "nv", "ab", "ag",
-        "corp", "corporation", "group", "holdings", "industries", "technologies",
-        "solutions", "systems", "services", "partners", "associates", "manufacturing",
-        "logistics", "health", "medical", "financial", "bank",
+        "inc",
+        "llc",
+        "ltd",
+        "limited",
+        "gmbh",
+        "sa",
+        "sas",
+        "bv",
+        "nv",
+        "ab",
+        "ag",
+        "corp",
+        "corporation",
+        "group",
+        "holdings",
+        "industries",
+        "technologies",
+        "solutions",
+        "systems",
+        "services",
+        "partners",
+        "associates",
+        "manufacturing",
+        "logistics",
+        "health",
+        "medical",
+        "financial",
+        "bank",
         # Section headings seen standing in for a victim name on real listing pages.
-        "confidential", "documentation", "documents", "personal", "internal", "customer",
-        "employee", "database", "backup", "archive", "sample", "samples", "proof", "part",
+        "confidential",
+        "documentation",
+        "documents",
+        "personal",
+        "internal",
+        "customer",
+        "employee",
+        "database",
+        "backup",
+        "archive",
+        "sample",
+        "samples",
+        "proof",
+        "part",
     }
 )
 
@@ -227,6 +309,38 @@ def _is_not_a_company_name(candidate: str) -> bool:
     """True when every word is a name fragment, so the whole thing names no one."""
     words = [word.strip(".,").lower() for word in candidate.split()]
     return bool(words) and all(word in _NAME_FRAGMENTS for word in words)
+
+
+def _merge_split_listings(records: list[_Record]) -> list[_Record]:
+    """Fold a record into the one before it when both are halves of one listing.
+
+    Cards that print the name as a heading and again in a "Company: <name>" field (direwolf)
+    produce two records for one victim: the heading keeps the date, the field keeps the
+    domain. The halves are adjacent, share a name, and at most one of them has a domain.
+    Two same-named records that *each* have a domain are left alone — that is a byline
+    repeated on every card ("by Alexander Pushkin", arcus), and merging them would throw
+    one victim's domain away.
+    """
+    merged: list[_Record] = []
+    for record in records:
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and record.victim_name
+            and (previous.victim_name or "").casefold() == record.victim_name.casefold()
+            and not (previous.victim_url and record.victim_url)
+        ):
+            if previous.victim_url is None:
+                previous.victim_url, previous.url_pos = record.victim_url, record.url_pos
+            previous.date_raw = previous.date_raw or record.date_raw
+            previous.size_raw = previous.size_raw or record.size_raw
+            previous.status_raws.extend(record.status_raws)
+            previous.location_raws.extend(record.location_raws)
+            previous.sector_raws.extend(record.sector_raws)
+            previous.confidences.extend(record.confidences)
+            continue
+        merged.append(record)
+    return merged
 
 
 def _assign_urls_to_nearest_victim(
@@ -254,11 +368,11 @@ def _assign_urls_to_nearest_victim(
 
         for index, (start, end) in enumerate(victim_positions):
             if end <= span.start:
-                gap = span.start - end           # victim above the URL
+                gap = span.start - end  # victim above the URL
             elif start >= span.end:
-                gap = start - span.end           # victim below the URL
+                gap = start - span.end  # victim below the URL
             else:
-                gap = 0                          # overlapping: the URL is inside the name
+                gap = 0  # overlapping: the URL is inside the name
             # `<` rather than `<=` on a victim below, `<=` on one above, is what makes ties
             # fall to the later victim: positions are visited in document order.
             if best_gap is None or gap < best_gap or (gap == best_gap and start > span.end):
@@ -291,9 +405,7 @@ def _to_leak(
         # worse error than a missing name.
         victim_name = None
 
-    confidence = (
-        sum(record.confidences) / len(record.confidences) if record.confidences else None
-    )
+    confidence = sum(record.confidences) / len(record.confidences) if record.confidences else None
 
     # The victim's own name is the single most reliable sector evidence there is —
     # "Northwind Medical Group" and "Fairview Unified School District" say what they do —
@@ -306,6 +418,9 @@ def _to_leak(
     # at all, so the ccTLD is what actually fills this column.
     country = resolve_country(record.location_raws, domain=domain)
 
+    status = LeakStatus(resolve_status(record.status_raws))
+    size = parse_size(record.size_raw)
+
     return ExtractedLeak(
         victim_name=victim_name,
         victim_domain=domain,
@@ -316,8 +431,16 @@ def _to_leak(
         source_page_no=page_no,
         published_at=parse_date(record.date_raw),
         published_at_raw=record.date_raw,
-        status=LeakStatus(resolve_status(record.status_raws)),
-        leak_size_bytes=parse_size(record.size_raw),
+        status=status,
+        leak_size_bytes=size,
+        summary=record.summary,
+        # `leak_type` is the model's default — every source is a ransomware leak site.
+        incident_types=classify_incident(
+            summary=record.summary,
+            leak_type=ExtractedLeak.model_fields["leak_type"].default,
+            status=status.value,
+            leak_size_bytes=size,
+        ),
         extraction=ExtractionMeta(
             method=method,  # type: ignore[arg-type]
             model_version=model_version,

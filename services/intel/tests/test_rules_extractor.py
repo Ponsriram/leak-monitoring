@@ -1,7 +1,6 @@
 """End-to-end extraction over a realistic leak-site page.
 
-This is the fixture-driven test the old pipeline never had: page text in, expected leaks
-out, no database and no network.
+Fixture-driven: page text in, expected leaks out, no database and no network.
 """
 
 from __future__ import annotations
@@ -106,3 +105,22 @@ def test_handles_empty_and_junk_input() -> None:
     extractor = RulesExtractor()
     for text in ["", "   ", "\x00\x01\x02", "a" * 10_000]:
         assert isinstance(extractor.extract(text), list)
+
+
+@pytest.mark.parametrize(
+    "card",
+    [
+        # direwolf: each field on its own line, as `to_text` renders separate elements.
+        "Company:\nAztec Software\nWebsite:\nhttps://www.aztecsoftware.com\n"
+        "Industry:\nSpa and Salon Management\nRead More",
+        # sarcoma: label and value on one line.
+        "Aztec Software\nSite: www.aztecsoftware.com\nIndustry: Business Services\nMore info",
+    ],
+)
+def test_labelled_industry_and_buttons_are_not_victims(card: str) -> None:
+    leaks = extract_page(
+        card, source_group="x", source_url=None, page_no=1, extractor_name="rules"
+    )
+    names = {leak.victim_name for leak in leaks}
+    assert "Aztec Software" in names
+    assert not names & {"Salon Management", "Business Services", "Read More", "More info"}

@@ -1,14 +1,14 @@
 """fetch → hash → parse → normalize → dedupe → upsert.
 
-The whole point of this module is that it runs unattended. The old workflow was: open
-Jupyter, run `Scrape.ipynb`, wait hours, open `Mapping.ipynb`, edit a filename in a cell,
-run every cell in order, and hope you didn't run it twice.
+The whole point of this module is that it runs unattended: every source on its own
+interval, every run safe to repeat.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -25,8 +25,38 @@ log = structlog.get_logger(__name__)
 
 
 # A page shorter than this carries no listings. It is a challenge page, a JS shell, or an
-# error — all of which used to be indistinguishable from a healthy crawl in the database.
+# error, and is recorded as a failed crawl rather than a healthy one.
 MIN_PAGE_TEXT_CHARS = 50
+
+# Interstitials that answer 200 with a little text: DDoS access queues, human checks,
+# maintenance notices, login walls. Only a *short* page is judged — a real listing that
+# happens to link "Login" in its header runs to thousands of characters and is never read
+# as a gate. Every phrase below was seen on a monitored source's stored page 1.
+_GATE_MAX_CHARS = 600
+_GATES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("access queue", re.compile(r"placed in a queue|access queue|awaiting forwarding", re.I)),
+    (
+        "human check",
+        re.compile(
+            r"captcha|checking (?:that|if) you are (?:a )?human|verify you are human|"
+            r"are you (?:a )?human|i'?m not a robot",
+            re.I,
+        ),
+    ),
+    ("DDoS protection", re.compile(r"ddos[- ]?(?:protection|guard)|checking your browser", re.I)),
+    ("maintenance", re.compile(r"under maintenance|maintenance is (?:currently )?underway", re.I)),
+    ("login wall", re.compile(r"^\s*(?:log ?in|sign ?in)\s*$", re.I | re.M)),
+)
+
+
+def gate_kind(text: str) -> str | None:
+    """Which kind of interstitial this page is, or None for a page worth extracting."""
+    if len(text.strip()) > _GATE_MAX_CHARS:
+        return None
+    for kind, pattern in _GATES:
+        if pattern.search(text):
+            return kind
+    return None
 
 
 @dataclass(slots=True)
@@ -92,8 +122,7 @@ async def crawl_source(
 ) -> SourceResult:
     """Crawl one source end to end. Never raises — failures are recorded, not propagated.
 
-    One bad source must not abort the run; the old script died on the first unhandled
-    exception and lost every page it had already fetched.
+    One bad source must not abort the run or lose the pages already fetched.
 
     Pages are fetched in concurrent, doubling waves (`intel.scheduling.page_waves`) rather
     than one at a time. Reaching the end of a P-page listing costs O(log P) sequential Tor
@@ -133,9 +162,9 @@ async def crawl_source(
     # A caller with no run-wide budget (the CLI crawling one source) gets a private one, so
     # this function is never unbounded regardless of how it is entered.
     slots = fetch_slots if fetch_slots is not None else asyncio.Semaphore(width)
-    # The old politeness rule was a full `request_delay_seconds` sleep between pages. Spread
-    # across a wave instead: the site still sees requests arrive at the configured rate, but
-    # they overlap in flight rather than queueing behind each other.
+    # `request_delay_seconds` is spread across a wave rather than slept between pages: the
+    # site still sees requests arrive at the configured rate, but they overlap in flight
+    # rather than queueing behind each other.
     stagger = source.request_delay_seconds / width if source.request_delay_seconds > 0 else 0.0
 
     async def fetch_page(page_no: int, base: str, delay: float = 0.0) -> _Page | None:
@@ -161,10 +190,8 @@ async def crawl_source(
             # A missing page N>1 just means the listing ended.
             return False
 
-        # Counted here, before the content checks below. These two lines used to sit
-        # after the empty-page check, so a source that returned a challenge page — a
-        # real fetch, just not a listing — was recorded as a successful crawl of zero
-        # pages, which reset its failure counter and made a blocked site look healthy.
+        # Counted here, before the content checks below: a challenge page is a real fetch,
+        # just not a listing, and must not be recorded as a successful crawl of zero pages.
         result.pages_fetched += 1
         result.bytes_fetched += len(page.html.encode("utf-8"))
 
@@ -174,6 +201,18 @@ async def crawl_source(
             result.mirrors_found += await _record_mirrors(
                 text, source=source, storage=storage, url=page.url, known_hosts=known_hosts
             )
+
+        gate = gate_kind(text) if page.page_no == 1 else None
+        if gate:
+            # Same failure as the empty page below, one step subtler: the site answered 200
+            # with a few hundred characters of interstitial. Passing the length check would
+            # store it and reset the failure counter, so a source behind a DDoS queue or a
+            # human check would read as healthy while collecting nothing. Passing the gate
+            # is not something this crawler does.
+            result.status = "failed"
+            result.error = f"page 1 is a {gate} page, not a listing — the site gates automated access"
+            log.info("gate page, stopping", source=source.slug, gate=gate)
+            return False
 
         if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
             if page.page_no == 1:
@@ -288,12 +327,11 @@ async def crawl_source(
                 break
 
     except asyncio.CancelledError:
-        # Cancellation is NOT an Exception subclass, so it used to fall straight through to
-        # the `finally` below with `result.status` still at its default "succeeded". Every
-        # source in flight when the worker's job timeout fired was therefore written to the
-        # database as a successful crawl of zero pages — which reset `consecutive_failures`
-        # and set `last_success_at`, so sources that had never been fetched showed as
-        # healthy. Record the truth, then re-raise: cancellation must stay cancellation.
+        # Cancellation is NOT an Exception subclass, so without this it would fall straight
+        # through to the `finally` below with `result.status` still at its default
+        # "succeeded" — a source in flight when the job timeout fires would be written as a
+        # successful crawl of zero pages. Record the truth, then re-raise: cancellation must
+        # stay cancellation.
         result.status = "failed"
         result.error = "crawl cancelled (worker shutdown or job timeout)"
         log.warning("source crawl cancelled", source=source.slug)
@@ -435,6 +473,7 @@ def extract_page(
         source_url=source_url,
         page_no=page_no,
         method=extractor_name,
+        page_text=text,
     )
 
 
@@ -458,11 +497,8 @@ def crawl_depth_for(source: SourceRow, *, now: datetime | None = None) -> str:
 def due_sources(sources: list[SourceRow], *, now: datetime | None = None) -> list[SourceRow]:
     """Keep only the sources whose own interval says they are ready to be crawled again.
 
-    `sources.crawl_interval_seconds` existed from the first migration and nothing ever read
-    it: the scheduler ran every enabled source on one hourly cron. So a fast-moving site
-    configured for 15 minutes was refetched hourly, and 30 stable sites were refetched
-    hourly whether or not anything about them had changed — which is how an hour-long job
-    grew to reliably outlive its own window.
+    Each source's `crawl_interval_seconds` is honoured individually, so a fast-moving site
+    is refetched on its own cadence and a stable one is not refetched for nothing.
 
     A source that has never been crawled is always due.
     """
@@ -536,9 +572,8 @@ async def run_pipeline(
 
     run = RunResult(sources=list(results))
 
-    # Alert matching, driven by the ids that were actually inserted. `match_alerts` existed
-    # as an arq task from the start but nothing ever enqueued it, so no alert had ever
-    # fired; running it here means every path that can create a leak also evaluates it.
+    # Alert matching, driven by the ids that were actually inserted, so every path that can
+    # create a leak also evaluates it.
     if run.new_leak_ids:
         events = await storage.match_alerts(run.new_leak_ids)
         if events:

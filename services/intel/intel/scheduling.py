@@ -1,9 +1,8 @@
 """How a source's pages get divided into concurrent fetch waves.
 
-The crawler used to walk a listing strictly in order: fetch page 1, wait, fetch page 2,
-wait, … up to `max_pages`. Over Tor a single page fetch is 10-30 seconds, so a ten-page
-source cost ten sequential round trips — O(P) in wall clock, and no amount of cross-source
-concurrency helped a source that happened to be deep.
+Walking a listing strictly in order — fetch page 1, wait, fetch page 2 — costs one Tor round
+trip of 10-30 seconds per page: O(P) in wall clock, and no amount of cross-source
+concurrency helps a source that happens to be deep.
 
 The obstacle to just firing all P pages at once is that P is not known. A listing ends when
 a page comes back empty, and that answer only exists after the fetch. Requesting all

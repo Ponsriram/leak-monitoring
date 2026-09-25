@@ -1,9 +1,7 @@
 """Async HTTP over Tor.
 
-Replaces `requests_tor`. The change that matters is not the library but the concurrency
-model: this is async, so the pipeline can crawl several sources at once. The old crawler was
-strictly sequential with a 20-second sleep between every page — 83 sources took many hours
-per cycle and could not be sped up without rewriting it.
+What matters is the concurrency model: this is async, so the pipeline crawls several sources
+at once instead of one page at a time.
 """
 
 from __future__ import annotations
@@ -124,9 +122,9 @@ class TorHttpCollector:
             if attempt < self._max_retries:
                 # "Proxy Server could not connect: TTL expired" means Tor could not build a
                 # rendezvous circuit in time — routinely transient, and routinely fixed by
-                # waiting long enough for a new circuit. The old backoff was 2s/4s/8s, which
-                # is far shorter than an onion circuit takes to rebuild, so every retry
-                # reused a path that had just failed. These waits are long enough that
+                # waiting long enough for a new circuit. A backoff of a few seconds is far
+                # shorter than an onion circuit takes to rebuild, so every retry would reuse
+                # a path that had just failed. These waits are long enough that
                 # MaxCircuitDirtiness (180s) can actually rotate the circuit underneath us.
                 delay = min(self._backoff * (2 ** (attempt - 1)), self._backoff_cap)
                 await asyncio.sleep(delay)

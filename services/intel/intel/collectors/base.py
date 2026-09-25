@@ -34,10 +34,9 @@ class Collector(Protocol):
 def page_url(base_url: str, page_no: int, style: str) -> str | None:
     """Build the URL for page N.
 
-    The old crawler appended `?page=N` to every site unconditionally, including ones with no
-    pagination at all — which is why it produced runs of identical pages and had to detect
-    them after the fact by comparing content. Pagination is now declared per source in
-    `sources.yaml`; `none` means the base URL is the whole listing.
+    Pagination is declared per source in `sources.yaml`; `none` means the base URL is the
+    whole listing. Appending `?page=N` to a site with no pagination only fetches runs of
+    identical pages.
     """
     if page_no == 1:
         return base_url

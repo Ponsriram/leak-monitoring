@@ -1,7 +1,6 @@
-"""Linker tests — the logic that had five divergent copies and no test.
+"""Linker tests — spans in, discrete leaks out.
 
-Each case pins down a behaviour the old order-dependent implementation got wrong or needed
-its `orphan_entries` machinery to work around.
+Each case pins down one layout a leak site actually uses.
 """
 
 from __future__ import annotations
@@ -10,6 +9,7 @@ from datetime import UTC, datetime
 
 from intel.extract.linker import Label, Span, link_spans
 from intel.models import LeakStatus
+from intel.pipeline import extract_page
 
 
 def span(label: str, text: str, start: int = 0) -> Span:
@@ -82,7 +82,7 @@ def test_trailing_prose_does_not_drag_a_url_to_the_next_victim() -> None:
 
 
 def test_a_bare_legal_suffix_is_not_used_as_the_victim_name() -> None:
-    """"Financial" is a table heading, not eight different companies.
+    """ "Financial" is a table heading, not eight different companies.
 
     The record survives — its domain identifies the victim — but the misleading label is
     dropped. Suppressing the record instead would strand the domain on a neighbouring
@@ -252,7 +252,7 @@ def test_a_location_attaches_to_the_listing_it_follows() -> None:
 
 
 def test_a_location_span_is_normalized_before_it_is_stored() -> None:
-    """"USA" and "america" are one country in the filter, not three."""
+    """ "USA" and "america" are one country in the filter, not three."""
     leaks = link_spans(
         [
             Span(Label.VICTIM, "Northwind Logistics", 0, 19),
@@ -308,7 +308,7 @@ def test_a_sector_span_is_weighed_alongside_the_name() -> None:
 
 
 def test_a_suppressed_victim_name_contributes_no_sector() -> None:
-    """"Financial" standing in for a name is a section heading, not the victim's industry."""
+    """ "Financial" standing in for a name is a section heading, not the victim's industry."""
     leaks = link_spans(
         [
             Span(Label.VICTIM, "Financial", 0, 9),
@@ -318,3 +318,38 @@ def test_a_suppressed_victim_name_contributes_no_sector() -> None:
     )
     assert leaks[0].victim_name is None
     assert leaks[0].victim_sector is None
+
+
+def test_a_name_repeated_in_a_company_field_is_one_listing() -> None:
+    # direwolf's card: a heading, then "Company: <same name>", then the website.
+    def card(name: str, site: str, date: str) -> str:
+        return (
+            f"{name}\nPublished: {date}\nCompany:\n{name}\nWebsite:\nhttps://www.{site}\n"
+            "Industry:\nHealthcare Services\nGDPR:\nNo\nData Size:\n-\nRead More\n"
+        )
+
+    text = card("Aztec Software", "aztecsoftware.com", "2026-09-16") + card(
+        "Hazel Health", "hazel.co", "2026-09-14"
+    )
+    leaks = extract_page(text, source_group="x", source_url=None, page_no=1, extractor_name="rules")
+    found = [
+        (leak.victim_name, leak.victim_domain, str(leak.published_at.date())) for leak in leaks
+    ]
+    assert found == [
+        ("Aztec Software", "aztecsoftware.com", "2026-09-16"),
+        ("Hazel Health", "hazel.co", "2026-09-14"),
+    ]
+
+
+def test_a_byline_repeated_on_every_card_does_not_merge_the_cards() -> None:
+    # arcus: every card is signed by the same author, with the victim's domain and a
+    # description after it.
+    text = (
+        "ARDA\nby\nFyodor Dostoevsky\nSeptember 16, 2026\nArda.or.th\n—\n"
+        "The Agricultural Research Development Agency serves as a public organization.\n"
+        "ASADA\nby\nFyodor Dostoevsky\nSeptember 15, 2026\nasadasarapiqui.com\n—\n"
+        "Asada Sarapiqui is an organization focused on providing water supply services.\n"
+    )
+    leaks = extract_page(text, source_group="x", source_url=None, page_no=1, extractor_name="rules")
+    domains = {leak.victim_domain for leak in leaks} - {None}
+    assert domains == {"arda.or.th", "asadasarapiqui.com"}

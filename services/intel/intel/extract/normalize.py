@@ -1,8 +1,7 @@
 """Turn what a leak site prints into what the database can query.
 
-This module is the fix for the single most consequential defect in the old system: dates were
-stored as whatever text the site used ("10 Feb, 2025"), so `$gte` against a real date matched
-nothing and the weekly chart silently rendered empty for months.
+Dates are the consequential case: stored as whatever text the site used ("10 Feb, 2025"), a
+date range would match nothing and the per-day chart would silently render empty.
 
 Everything here is pure and total — no I/O, no exceptions on bad input. Unparseable input
 returns None and the raw text is kept alongside for audit.

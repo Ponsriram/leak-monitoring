@@ -1,7 +1,7 @@
 """HTML → clean text, with selectolax.
 
-selectolax parses roughly 10–30× faster than BeautifulSoup, which the old crawler used. That
-matters here because the pipeline re-parses on every crawl.
+selectolax parses roughly 10–30× faster than BeautifulSoup. That matters here because the
+pipeline re-parses on every crawl.
 """
 
 from __future__ import annotations
@@ -56,9 +56,8 @@ def to_text(html: str, *, drop_volatile: bool = True) -> str:
 def _clean(text: str) -> str:
     """Drop non-printable and non-ASCII noise, collapse blank runs.
 
-    The old code did `ord(char) < 128`, which also deleted every accented character in
-    European company names — turning "Nestlé" into "Nestl". Keep printable Unicode; drop
-    only control characters and the decorative symbols these sites are full of.
+    Keep printable Unicode — an ASCII-only filter would turn "Nestlé" into "Nestl" — and
+    drop only control characters and the decorative symbols these sites are full of.
     """
     lines: list[str] = []
     for raw_line in text.splitlines():

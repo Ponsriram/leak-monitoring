@@ -1,9 +1,7 @@
 """The one schema everything in the pipeline validates against.
 
-The old code passed untyped dicts between five divergent copies of the mapping loop, which
-is how the field names drifted apart from what the API and database expected. Every
-extractor here returns `ExtractedLeak`, and nothing reaches the database without passing
-through it.
+Every extractor returns `ExtractedLeak`, and nothing reaches the database without passing
+through it — so field names cannot drift apart from what the API and database expect.
 """
 
 from __future__ import annotations
@@ -28,10 +26,12 @@ class LeakStatus(StrEnum):
 
 class ExtractionMethod(StrEnum):
     RULES = "rules"
-    GLINER = "gliner"
     LLM = "llm"
     MANUAL = "manual"
     MIGRATED = "migrated"
+    # Taken from a published feed (ransomware.live) rather than extracted from a page we
+    # crawled. `ExtractionMeta.feed` names which one.
+    FEED = "feed"
 
 
 class ExtractionMeta(BaseModel):
@@ -63,6 +63,12 @@ class ExtractedLeak(BaseModel):
     status: LeakStatus = LeakStatus.UNKNOWN
     leak_type: str = "ransomware"
     leak_size_bytes: int | None = Field(default=None, ge=0)
+
+    # The listing's own description, as printed under the victim on the leak site. None when
+    # the page gave the victim no prose of its own.
+    summary: str | None = None
+    # Multi-valued: a published ransomware listing is also a data leak. See extract/describe.
+    incident_types: list[str] = Field(default_factory=list)
 
     extraction: ExtractionMeta
 

@@ -17,9 +17,9 @@ WORKDIR /app
 
 # Dependency layer first: lockfile changes are rare, source changes are constant.
 #
-# The `browser` extra is included because 81 of the 83 entries in sources.yaml declare
+# The `browser` extra is included because the JS-rendered sources in sources.yaml declare
 # `collector: browser`. Without it the worker imports fine and then dies at fetch time with
-# ModuleNotFoundError on all but two sources — the image would be nearly useless.
+# ModuleNotFoundError on every one of them.
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --no-install-project --no-dev --extra browser
 

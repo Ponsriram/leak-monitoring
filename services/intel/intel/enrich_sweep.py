@@ -17,6 +17,12 @@ looks exactly like a scan to everyone receiving it.
 
 **Oldest first, never-checked before stale.** A domain nobody has ever looked at is worth more
 than refreshing one checked yesterday.
+
+**Indicator hosts get WHOIS and nothing else.** The IOC table's WHOIS column needs the
+registration record, which RDAP answers from the *registry*. The DNS lookup and the home-page
+GET that victim domains get are skipped on purpose: an indicator host is live malware, phishing
+or C2 infrastructure — URLhaus hosts serve payloads — and fetching from it, or resolving it
+through its own name servers, would put this machine in contact with the attacker's side.
 """
 
 from __future__ import annotations
@@ -41,6 +47,8 @@ class SweepResult:
     attempted: int = 0
     enriched: int = 0
     failed: int = 0
+    ioc_hosts: int = 0
+    ioc_lookups: int = 0
 
 
 async def _enrich_one(client: Any, domain: str) -> dict[str, Any]:
@@ -92,15 +100,19 @@ async def sweep_domains(
     settings: Settings,
     limit: int | None = None,
 ) -> SweepResult:
-    """Enrich one batch of the domains that most need it."""
+    """Enrich one batch of the victim domains, then one batch of indicator hosts."""
     batch = limit if limit is not None else settings.enrich_batch_size
     domains = await storage.domains_needing_enrichment(
         limit=batch, max_age_seconds=settings.enrich_max_age_seconds
     )
-    if not domains:
+    hosts = await storage.ioc_hosts_needing_whois(
+        limit=settings.enrich_ioc_batch_size,
+        max_age_seconds=settings.enrich_ioc_max_age_seconds,
+    )
+    if not domains and not hosts:
         return SweepResult()
 
-    result = SweepResult(attempted=len(domains))
+    result = SweepResult(attempted=len(domains), ioc_hosts=len(hosts))
     # A ceiling on how many third-party servers we are talking to at once. This is the whole
     # politeness budget of the sweep — everything else about it is a consequence of this
     # number and how often the cron fires.
@@ -120,10 +132,44 @@ async def sweep_domains(
 
         await asyncio.gather(*(one(domain) for domain in domains))
 
+        # Indicator hosts: RDAP only, one lookup per registrable domain. Feeds are full of
+        # subdomains on one apex — a hundred `*.workers.dev` hosts are one registration —
+        # so grouping is both the correct answer and a hundredfold saving on the registry.
+        by_apex: dict[str, list[str]] = {}
+        for host in hosts:
+            by_apex.setdefault(apex_domain(host) or host, []).append(host)
+
+        async def whois(apex: str, members: list[str]) -> None:
+            async with slots:
+                try:
+                    rdap = await fetch_rdap(client, apex)
+                except Exception as exc:  # noqa: BLE001 - a registry outage is recorded
+                    facts: dict[str, Any] = {"error": f"rdap: {type(exc).__name__}"[:300]}
+                else:
+                    result.ioc_lookups += 1
+                    facts = {}
+                    if not rdap.is_empty():
+                        facts = {
+                            "registrar": rdap.registrar,
+                            "whois_contacts": rdap.contacts or None,
+                            "registered_at": rdap.registered_at,
+                            "expires_at": rdap.expires_at,
+                        }
+                # `status` stays not_scanned: nothing here looked at the site, and saying
+                # otherwise would put a claim about a host we deliberately never touched
+                # into the site-status column.
+                facts["status"] = "not_scanned"
+                for host in members:
+                    await storage.upsert_domain_enrichment(host, facts)
+
+        await asyncio.gather(*(whois(apex, members) for apex, members in by_apex.items()))
+
     log.info(
         "enrich sweep finished",
         attempted=result.attempted,
         enriched=result.enriched,
         failed=result.failed,
+        ioc_hosts=result.ioc_hosts,
+        ioc_lookups=result.ioc_lookups,
     )
     return result

@@ -10,14 +10,11 @@
 # your legal and operational position, not a side effect of loading a config file.
 # ------------------------------------------------------------------------------------------
 #
-# Last reachability probe: 2026-08-14 — 83 legacy URLs tested, 30 responded, 53 dead.
-# The dead ones were removed. Leak sites rotate addresses and get seized constantly, so
-# re-probe periodically: `consecutive_failures` on each source tracks this automatically.
+# Leak sites rotate addresses and get seized constantly: `consecutive_failures` on each
+# source tracks reachability automatically, and the Sources page shows it.
 #
 # crawl_interval_seconds is the SHALLOW PROBE cadence — one fetch of page 1, which is where
-# leak sites append new victims. 900s is affordable precisely because it is one page: the old
-# 3600s value walked the whole listing every time and the content hash then discarded most of
-# it, so this is roughly a third of the previous Tor traffic at four times the freshness.
+# leak sites append new victims. 900s is affordable precisely because it is one page.
 #
 # The full walk is separate, on `deep_crawl_interval_seconds` (default 6h), and is what
 # catches edits to older entries and pages a failed crawl missed.
@@ -25,45 +22,28 @@
 # collector:        http (fast, no JS) | browser (Playwright, for JS-rendered listings)
 # pagination_style: none | query (?page=N) | path (/page/N) | offset (?offset=N)
 #
-# Nearly all sources use `collector: http`.
+# Nearly all sources use `collector: http`: `browser` launches Firefox per source and waits
+# on page lifecycle events, `http` is one async request. Use `browser` only for a site whose
+# listings render client-side and come back empty over HTTP — 3ev4metjiroh (Abyss),
+# blogvl7tjyjv, embargo, inc-ransom, j5o5y2feotmh, lynx, ransomhouse (Everest), termite and
+# zohlm7ahjweg.
 #
-# They were originally ALL marked `browser` because the old crawler routed everything through
-# Selenium. That was wrong and expensive: the 2026-08-14 probe reached every one of them
-# over plain HTTP, while a full `browser` run timed out on six of them (cloak, funksec,
-# ijzn3sicrcy7, om6q4a6cyipx, ransomhouse, z3wqggtxft7i) — sites that plain HTTP had just
-# fetched successfully.
+# Only sources that actually yield listings belong here. A site that is gated behind a
+# CAPTCHA or access queue, has moved or gone down, or turns out not to be a leak site at all
+# (a forum, a shop, a file index) is deleted from this file rather than kept switched off —
+# then `intel sources sync --prune` removes it from the database too. Its collected leaks
+# survive the prune. To check a site before adding it here, see `intel sources probe --help`.
 #
-# `browser` launches Firefox per source and waits on page lifecycle events; `http` is one
-# async request. Only switch a source back to `browser` if its listings genuinely render
-# client-side and come back empty over HTTP.
-#
-# Ten do, as of 2026-08-17. Each was identified by a specific symptom rather than guessed
-# at, and each was verified by running it both ways:
-#
-#   akira      HTTP 403 on every attempt, while the same address loads in Tor Browser —
-#              the site refuses clients that don't execute its challenge.
-#   blacksuit  302 to /b/challenge, which then returns 200. Plain HTTP was storing the
-#              challenge page and calling it a listing.
-#   cloak      302 to /verify_captcha, same story.
-#   blogvl7tjyjv, embargo, inc-ransom, j5o5y2feotmh, lynx, termite, zohlm7ahjweg
-#              all returned 0 characters of text over HTTP and real listings through
-#              Playwright. Switching them found 28 leaks on the first run, including 27
-#              from termite that had never been collected at all.
-#
-# Every one of them had been recorded as a *healthy* crawl while collecting nothing, because
-# a page that fetched but held no text counted as a success. It no longer does — see
-# MIN_PAGE_TEXT_CHARS in pipeline.py — which is how this list was found.
-#
-# Two sources still collect nothing and are honest failures rather than hidden ones:
-#
-#   cloak      serves a CAPTCHA interstitial. A browser reaches it but cannot pass it, and
-#              solving it automatically is not something this crawler will do.
-#   direwolf   29 characters of text either way. Needs investigating; possibly moved.
+# A page 1 that is a DDoS access queue, a human check, a maintenance notice, a login wall or
+# near-empty is recorded as a FAILED crawl naming the gate (see `gate_kind` and
+# MIN_PAGE_TEXT_CHARS in pipeline.py). The crawler does not solve CAPTCHAs or pass queues;
+# a source stuck behind one stays failing until it changes.
 
 - slug: 3ev4metjiroh
-  name: 3Ev4Metjiroh
+  name: Abyss
   base_url: "http://3ev4metjirohtdpshsqlkrqcmxq6zu3d7obrdhglpy5jpbr7whmlfgqd.onion"
-  collector: http
+  # Page says "Abyss". Listing loads by JS: http gets "Loading...", browser gets 7 victims (verified 2026-09-18).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 900
@@ -90,17 +70,6 @@
   request_delay_seconds: 15
   enabled: false
 
-- slug: akira
-  name: Akira
-  base_url: "https://akiralkzxzq2dsrzsrvbr2xgbbu2wgsmxryd4csgfameg52n7efvr2id.onion"
-  # 403 over plain HTTP; loads fine in Tor Browser. See the note at the top of this file.
-  collector: browser
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
 - slug: arcus
   name: Arcus
   base_url: "http://arcuufpr5xxbbkin4mlidt7itmr6znlppk63jbtkeguuhszmc5g7qdyd.onion"
@@ -112,20 +81,9 @@
   enabled: false
 
 - slug: bashex7mokre
-  name: Bashex7Mokre
+  name: BASHE
   base_url: "http://bashex7mokreyoxl6wlswxl4foi7okgs7or7aergnuiockuoq35yt3ad.onion"
   collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: blacksuit
-  name: Blacksuit
-  base_url: "http://black3gnkizshuynieigw6ejgpblb53mpasftzd6pydqpmq2vn2xf6yd.onion"
-  # Redirects to /b/challenge. Plain HTTP stored the challenge page as if it were listings.
-  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 900
@@ -143,20 +101,11 @@
   request_delay_seconds: 15
   enabled: false
 
-- slug: cloak
-  name: Cloak
-  base_url: "http://cloak7jpvcb73rtx2ff7kaw2kholu7bdiivxpzbhlny4ybz75dpxckqd.onion"
-  # Redirects to /verify_captcha. Same as blacksuit: HTTP gets the interstitial, not the list.
-  collector: browser
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
 - slug: direwolf
   name: Direwolf
   base_url: "http://direwolfcdkv5whaz2spehizdg22jsuf5aeje4asmetpbt6ri4jnd4qd.onion"
+  # Listing is server-rendered; it read as empty only because to_text dropped every
+  # `card countdown-active` card. Fixed in html.py; 24 victims (verified 2026-09-18).
   collector: http
   pagination_style: none
   max_pages: 5
@@ -169,16 +118,6 @@
   base_url: "http://embargobe3n5okxyzqphpmk3moinoap2snz5k6765mvtkk7hhi544jid.onion"
   # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
   collector: browser
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: funksec
-  name: Funksec
-  base_url: "http://funknqn44slwmgwgnewne6bintbooauwkaupik4yrlgtycew3ergraid.onion"
-  collector: http
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 900
@@ -207,7 +146,7 @@
   enabled: false
 
 - slug: ipi4
-  name: Ipi4
+  name: Play
   base_url: "http://ipi4tiumgzjsym6pyuzrfqrtwskokxokqannmd6sa24shvr7x5kxdvqd.onion"
   collector: http
   pagination_style: none
@@ -237,20 +176,10 @@
   request_delay_seconds: 15
   enabled: false
 
-- slug: lockbit-2
-  name: Lockbit 2
-  base_url: "http://lockbit7z3azdoxdpqxzliszutufbc2fldagztdu47xyucp25p4xtqad.onion"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
 - slug: lynx
   name: Lynx
-  base_url: "http://lynxblogtwatfsrwj3oatpejwxk5bngqcd5f7s26iskagfu7ouaomjad.onion/leak"
-  # 0 chars over HTTP, real listings via browser (verified 2026-08-17).
+  base_url: "http://lynxblogtwatfsrwj3oatpejwxk5bngqcd5f7s26iskagfu7ouaomjad.onion/leaks"
+  # /leaks, not /leak — /leak is the news page. Browser run found 15 victims (verified 2026-09-18).
   collector: browser
   pagination_style: none
   max_pages: 5
@@ -258,18 +187,8 @@
   request_delay_seconds: 15
   enabled: false
 
-- slug: mydata
-  name: Mydata
-  base_url: "http://mydatae2d63il5oaxxangwnid5loq2qmtsol2ozr6vtb7yfm5ypzo6id.onion"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
 - slug: om6q4a6cyipx
-  name: Om6Q4A6Cyipx
+  name: Anubis
   base_url: "http://om6q4a6cyipxvt7ioudxt24cw4oqu4yodmqzl25mqd2hgllymrgu4aqd.onion"
   collector: http
   pagination_style: none
@@ -279,9 +198,13 @@
   enabled: false
 
 - slug: ransomhouse
-  name: Ransomhouse
-  base_url: "http://ransomocmou6mnbquqz44ewosbkjk3o5qjsl3orawojexfook2j7esad.onion"
-  collector: http
+  name: Everest
+  base_url: "http://everestndkvzcibcje2cqxhre2hmmybl3rn2gwzwsblz7gx6uryn5rad.onion"
+  # Slug is historical: the old address (ransomocmou6…onion) served the EVEREST group's site,
+  # not RansomHouse, and on 2026-08-14 announced this new domain. Slug kept so the source's
+  # crawl history stays attached. JS-rendered: http gets 0 chars, browser gets the list
+  # (verified 2026-09-18 with `intel sources probe`).
+  collector: browser
   pagination_style: none
   max_pages: 5
   crawl_interval_seconds: 900
@@ -289,7 +212,7 @@
   enabled: false
 
 - slug: ransomlook-2
-  name: Ransomlook 2
+  name: Run Some Wares
   base_url: "http://rnsmwareartse3m4hjsumjf222pnka6gad26cqxqmbjvevhbnym5p6ad.onion"
   collector: http
   pagination_style: none
@@ -301,16 +224,6 @@
 - slug: rhysida
   name: Rhysida
   base_url: "http://rhysidafc6lm7qa2mkiukbezh7zuth3i4wof4mh2audkymscjm6yegad.onion"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: santa
-  name: Santa
-  base_url: "http://santat7kpllt6iyvqbr7q4amdv6dzrh6paatvyrzl7ry3zm72zigf4ad.onion"
   collector: http
   pagination_style: none
   max_pages: 5
@@ -350,8 +263,10 @@
   enabled: false
 
 - slug: z3wqggtxft7i
-  name: Z3Wqggtxft7I
-  base_url: "http://z3wqggtxft7id3ibr7srivv5gjof5fwg76slewnzwwakjuf3nlhukdid.onion/blog"
+  name: DragonBlog
+  base_url: "http://xjhmtitnrdrgzw4vmsghirdoo2fk35a3tzj4enlmah4pvehdspydsiyd.onion"
+  # Moved. The old address (z3wqggtxft7i…onion/blog) posted a PGP-signed
+  # "Migration completed" notice naming this one. 76 victims over http (verified 2026-09-18).
   collector: http
   pagination_style: none
   max_pages: 5
@@ -369,131 +284,3 @@
   crawl_interval_seconds: 900
   request_delay_seconds: 15
   enabled: false
-
-- slug: spacex
-  name: Spacex
-  base_url: "http://spacexpkeys5of5zsj6c74wwyut72kcplpua4km644b3zhywv6duz5yd.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: exploit
-  name: Exploit
-  base_url: "http://exploitivzcm5dawzhe6c32bbylyggbjvh5dyvsvb5lkuz5ptmunkmqd.onion/"
-  # CAUTION: "Exploit" is most likely a hacking forum / marketplace, not a ransomware
-  # victim-disclosure site — i.e. the torzon / tenebris case below. Confirm what it actually
-  # is before enabling; the ransomware extractor will produce noise on a forum.
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: garden
-  name: Garden
-  base_url: "http://gardeni2xtbqdpn3mndvod5rzewor2rlo2g5iuyniqwd7vbyt7cwcrqd.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: garden-2
-  name: Garden 2
-  # A second Garden address — likely a mirror of the entry above. Keep both until a probe
-  # shows one is dead; leak sites publish several addresses for the same site.
-  base_url: "http://gardenjsprbg5fchsmofxdjsti76dd7use3v4q4z2suqfgeytjylliid.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: germania
-  name: Germania
-  base_url: "http://germania7zs27fu3gi76wlr5rd64cc2yjexyzvrbm4jufk7pibrpizad.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: bbzzzsvqcrqt
-  name: Bbzzzsvqcrqt
-  base_url: "http://bbzzzsvqcrqtki6umym6itiixfhni37ybtt7mkbjyxn2pgllzxf2qgyd.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: eisrgs2wyyza
-  name: Eisrgs2Wyyza
-  base_url: "http://eisrgs2wyyzaxemtaof3n2kqqxuxdx3y7r5vwfi7rukn3z7owxweznid.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: waa2dbeditmg
-  name: Waa2Dbeditmg
-  base_url: "http://waa2dbeditmgttutm4m64jvwirmwtirhbuupngbhheddadyojgjsttid.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: prescoovxnsi
-  name: Prescoovxnsi
-  base_url: "http://prescoovxnsimsdko4aiqaydujz5lsocwja5ctsakredr7s5uwhsvhad.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-# ---------------------------------------------------------------------------------------
-# The two entries below responded, but NEITHER IS A RANSOMWARE LEAK SITE.
-#
-# Torzon is a marketplace (vendors, products, prices); Tenebris is a discussion forum
-# (threads, posts, karma). This project's schema and extractor are built for ransomware
-# victim disclosure — victim org, actor group, leak size, publication status. Crawling a
-# marketplace or forum with that extractor will produce noise, not intelligence.
-#
-# They are kept here, disabled, as a record that they were checked. Making them useful means
-# a different extractor and probably a different table — not enabling these.
-# ---------------------------------------------------------------------------------------
-
-- slug: torzon
-  name: Torzon Market
-  base_url: "http://torzon4kv5swfazrziqvel2imhxcckc4otcvopiv5lnxzpqu4v4m5iyd.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-
-- slug: tenebris
-  name: Tenebris Forum
-  base_url: "http://tenebrispoyfrcup4k24lciwrh4gc5735hmld4dweq7his7zh423opqd.onion/"
-  collector: http
-  pagination_style: none
-  max_pages: 5
-  crawl_interval_seconds: 900
-  request_delay_seconds: 15
-  enabled: false
-

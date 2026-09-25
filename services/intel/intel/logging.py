@@ -1,7 +1,7 @@
 """Structured logging.
 
-The old pipeline emitted hundreds of bare `print()` calls per run ("Updated Org Name: ...",
-"Processing URL: ..."), which is unusable for diagnosing a crawl that ran overnight.
+Key-value events rather than free-text prints, so a crawl that ran overnight can be
+filtered and diagnosed afterwards.
 """
 
 from __future__ import annotations

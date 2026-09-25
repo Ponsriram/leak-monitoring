@@ -1,7 +1,6 @@
 """`intel` — the command line for the collection pipeline.
 
-Replaces the notebook ritual. Every operation that used to mean "run these cells in this
-order" is a command that can be scripted, scheduled, and re-run safely.
+Every operation is a command that can be scripted, scheduled, and re-run safely.
 """
 
 from __future__ import annotations
@@ -159,6 +158,113 @@ def sources_disable(slug: str = typer.Argument(..., help="Source slug")) -> None
     typer.echo(f"Disabled {count} source(s).")
 
 
+@sources_app.command("probe")
+def sources_probe(
+    url: str = typer.Argument(..., help="The page to test — the victim list itself"),
+    collector: str = typer.Option(
+        "auto", help="auto (http, then browser if http fails the checks) | http | browser"
+    ),
+    save: Path | None = typer.Option(
+        None, help="Directory to write the fetched page's .html and .txt into"
+    ),
+) -> None:
+    """Check a candidate site against the source checklist before adding it.
+
+    Fetches page 1 over Tor exactly as a crawl would and reports: reachable, gated,
+    readable, a victim listing (and not a forum or shop), which collector it needs, how it
+    paginates, and any new address it announces. Writes nothing to the database.
+
+        intel sources probe http://example....onion/leaks
+    """
+    from .collectors import get_collector  # noqa: PLC0415 - keep CLI start-up light
+    from .probe import evaluate, yaml_snippet  # noqa: PLC0415
+
+    _setup()
+    settings = get_settings()
+    kinds = ["http", "browser"] if collector == "auto" else [collector]
+
+    async def fetch(kind: str):  # type: ignore[no-untyped-def]
+        client = get_collector(
+            kind,
+            host=settings.tor_host,
+            socks_ports=settings.tor_socks_ports,
+            timeout=settings.request_timeout_seconds,
+            max_retries=2,
+            backoff_seconds=settings.retry_backoff_seconds,
+            backoff_cap_seconds=settings.retry_backoff_cap_seconds,
+        )
+        try:
+            # A hard ceiling on top of the collector's own timeouts: a hidden service that
+            # accepts the connection and then trickles bytes can otherwise hold this forever.
+            html = await asyncio.wait_for(
+                client.fetch(url), settings.request_timeout_seconds * 3
+            )
+            return html, client.last_error
+        except TimeoutError:
+            return None, "no complete response (connection hung)"
+        except ImportError as exc:
+            return None, str(exc).splitlines()[0]
+        finally:
+            await client.aclose()
+
+    passed = None
+    for kind in kinds:
+        typer.echo(f"\n== {kind} ==  fetching {url} (a Tor fetch takes up to a minute)")
+        html, error = asyncio.run(fetch(kind))
+        report = evaluate(url, kind, html, error)
+
+        if save is not None and html is not None:
+            save.mkdir(parents=True, exist_ok=True)
+            (save / f"probe.{kind}.html").write_text(html, encoding="utf-8")
+            (save / f"probe.{kind}.txt").write_text(report.text, encoding="utf-8")
+
+        if report.reachable:
+            typer.echo(
+                f"   fetched {report.html_bytes:,} bytes of HTML -> "
+                f"{len(report.text.strip()):,} chars of text"
+            )
+            first = report.text.strip().replace("\n", " | ")[:200]
+            typer.echo(f"   page starts: {first}")
+        typer.echo(f"   victims extracted: {len(report.victims)}")
+        for leak in report.victims[:10]:
+            typer.echo(f"     - {leak.victim_name or '(no name)':<40} {leak.victim_domain or ''}")
+        typer.echo(f"   pagination: {report.pagination}")
+
+        problems = report.problems()
+        for problem in problems:
+            typer.echo(f"   FAIL  {problem}")
+        if report.announced_mirrors:
+            typer.echo("   The page announces other addresses for itself — probe these too:")
+            for mirror in report.announced_mirrors:
+                typer.echo(f"     {mirror}")
+        if report.other_onions:
+            typer.echo("   Other onion addresses on the page (a move notice may be among them):")
+            for other in report.other_onions[:10]:
+                typer.echo(f"     {other}")
+        if report.listing_links and not report.usable and not report.off_topic_site:
+            typer.echo("   Links on this page that may be the actual listing — probe these:")
+            for link in report.listing_links:
+                typer.echo(f"     {link}")
+
+        if report.usable:
+            typer.echo(f"   PASS  a readable leak listing with collector: {kind}")
+            passed = report
+            break
+        if report.off_topic_site:
+            # Rendering the page in a browser does not turn a forum into a leak site.
+            break
+
+    typer.echo("")
+    if passed is None:
+        typer.echo("Verdict: do not add this URL as it is. Fix what FAIL says above first.")
+        raise typer.Exit(1)
+    typer.echo(
+        "Verdict: good to add. Read the victim names above — if they are thread titles, "
+        "products or menu items, it is not a leak site whatever the count says.\n"
+    )
+    typer.echo(yaml_snippet(url, passed.collector, passed.pagination))
+
+
 # ---------------------------------------------------------------- mirrors
 
 
@@ -265,7 +371,7 @@ def run(
     source: list[str] | None = typer.Option(
         None, "--source", "-s", help="Limit to these slugs (repeatable)"
     ),
-    extractor: str | None = typer.Option(None, help="rules | gliner"),
+    extractor: str | None = typer.Option(None, help="rules"),
     due_only: bool = typer.Option(
         False,
         "--due-only",
@@ -327,13 +433,13 @@ def run(
 def extract_file(
     path: Path = typer.Argument(..., help="A text file to extract from"),
     group: str = typer.Option("unknown", help="Ransomware group slug for these listings"),
-    extractor: str = typer.Option("rules", help="rules | gliner"),
+    extractor: str = typer.Option("rules", help="rules"),
     load: bool = typer.Option(False, "--load", help="Write results to the database"),
 ) -> None:
     """Extract leaks from a local text file.
 
     This is the offline path for testing an extractor against saved page text without
-    touching Tor — and the migration path for the old `combined_output_clean_text.txt`.
+    touching Tor.
     """
     _setup()
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -386,13 +492,13 @@ def repair_domains(
 ) -> None:
     """Re-key leaks whose victim_domain came from the listing next to theirs.
 
-    Sites that print the victim's link *above* the company name — termite, lockbit and
-    eight others — used to have every listing on the page take the following listing's
-    domain. `victim_domain` is half of `dedupe_hash`, so those rows are filed under another
-    company's identity, and a domain alert would fire for the wrong company.
+    On sites that print the victim's link *above* the company name — termite, lockbit and
+    eight others — an extraction that attaches links by reading order gives every listing
+    the following listing's domain. `victim_domain` is half of `dedupe_hash`, so such rows
+    are filed under another company's identity.
 
-    The fix runs over `raw_pages`, which still holds the text of everything fetched, so
-    history can be corrected without waiting for a re-crawl. Rows are corrected in place —
+    The repair runs over `raw_pages`, which holds the text of everything fetched, so stored
+    rows can be corrected without waiting for a re-crawl. Rows are corrected in place —
     `first_seen_at` is preserved, because "what is new since yesterday" is the one thing
     that cannot be reconstructed later.
 
@@ -452,6 +558,85 @@ def repair_domains(
             f"Cleared {tally['unnamed']} victim name(s) that were only a name fragment; "
             f"those rows are now identified by their domain."
         )
+
+
+@app.command("backfill-descriptions")
+def backfill_descriptions(
+    apply: bool = typer.Option(
+        False, "--apply", help="Actually write the summaries (default is a dry run)"
+    ),
+) -> None:
+    """Fill in summaries and incident types for leaks collected before they existed.
+
+    Runs the current extractor over every page in `raw_pages`, oldest first, and writes each
+    listing's description and types onto the leak it identifies. Oldest first so that when a
+    listing appears on several pages over time, its most recent wording is the one kept.
+
+    Only existing leaks are touched — nothing is inserted, and `first_seen_at` is never
+    written. Dry run by default; re-running after an apply is safe.
+    """
+    _setup()
+
+    async def work(storage: Storage, _: object) -> dict[str, int]:
+        tally = {"pages": 0, "listings": 0, "described": 0, "updated": 0}
+        async for slug, url, page_no, text in storage.iter_raw_pages():
+            tally["pages"] += 1
+            leaks = extract_page(
+                text, source_group=slug, source_url=url, page_no=page_no, extractor_name="rules"
+            )
+            tally["listings"] += len(leaks)
+            tally["described"] += sum(1 for leak in leaks if leak.summary)
+            if apply:
+                tally["updated"] += await storage.apply_descriptions(
+                    [(leak.dedupe_hash, leak.summary, leak.incident_types) for leak in leaks]
+                )
+        return tally
+
+    tally = asyncio.run(_with_storage(work))
+    typer.echo(
+        f"Read {tally['pages']} page(s): {tally['listings']} listing(s), "
+        f"{tally['described']} with a description."
+    )
+    if not apply:
+        typer.echo("Dry run. Pass --apply to write them.")
+        return
+    typer.echo(f"Wrote {tally['updated']} update(s) onto stored leaks.")
+
+
+@app.command("feeds")
+def feeds(
+    only: str = typer.Option(
+        "all",
+        "--only",
+        help="Which feeds: all | iocs (URLhaus, ThreatFox, TweetFeed) | ransomware "
+        "(ransomware.live) | mobile (scam phone-number reports)",
+    ),
+) -> None:
+    """Fetch the public feeds once, now, rather than waiting for the worker's schedule.
+
+    Runs the same jobs the worker runs on its crons, so what lands is exactly what the next
+    scheduled run would have written. Safe to repeat: every feed upserts.
+    """
+    _setup()
+    # Imported here: the tasks module builds the worker's settings at import time, which
+    # every other command has no need for.
+    from . import tasks
+
+    jobs = {
+        "iocs": tasks.fetch_feeds,
+        "ransomware": tasks.fetch_ransomware_feed,
+        "mobile": tasks.fetch_mobile_reports,
+    }
+    if only != "all" and only not in jobs:
+        raise typer.BadParameter(f"expected all, {', '.join(jobs)}; got {only!r}")
+    selected = jobs if only == "all" else {only: jobs[only]}
+
+    async def work(storage: Storage, settings: object) -> dict[str, object]:
+        ctx = {"storage": storage, "settings": settings}
+        return {name: await job(ctx) for name, job in selected.items()}
+
+    for name, outcome in asyncio.run(_with_storage(work)).items():
+        typer.echo(f"{name}: {outcome}")
 
 
 @app.command("status")

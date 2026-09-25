@@ -12,9 +12,9 @@ any time at all. Waiting for the slowest lookup before showing the fastest would
 common case — "we already had three listings for this company" — feel as slow as the rarest.
 
 **No single lookup can fail the hunt.** Each enricher is isolated: a registry outage records
-itself in `errors`, the hunt finishes `partial`, and everything else still shows. The old
-instinct — gather() and let the first exception win — would mean crt.sh being down deletes
-the WHOIS record we successfully fetched.
+itself in `errors`, the hunt finishes `partial`, and everything else still shows. Letting
+gather() raise the first exception would mean crt.sh being down deletes the WHOIS record we
+successfully fetched.
 """
 
 from __future__ import annotations

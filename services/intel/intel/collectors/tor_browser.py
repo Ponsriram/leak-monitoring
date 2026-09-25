@@ -5,15 +5,14 @@ Requires the `browser` extra:
     uv sync --extra browser
     playwright install firefox
 
-Two things differ from the old Selenium collector, and both are significant:
+Two design points, both significant:
 
-1. **One browser, reused.** The old `scrape_with_selenium()` called `init_selenium()`
-   internally, so a fresh headless Firefox process was launched and torn down for *every
-   single page request*. Here the browser and context are created once and shared.
+1. **One browser, reused.** The browser and context are created once and shared, rather
+   than launching and tearing down a headless Firefox for every page request.
 
-2. **Wait on the network, not the clock.** The old code slept a hardcoded 20 seconds per
-   page hoping the JavaScript had finished. Playwright waits for the actual load state,
-   which is both faster on quick pages and more reliable on slow ones.
+2. **Wait on the network, not the clock.** Playwright waits for the actual load state
+   instead of a fixed sleep, which is both faster on quick pages and more reliable on slow
+   ones.
 """
 
 from __future__ import annotations

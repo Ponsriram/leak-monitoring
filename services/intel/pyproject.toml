@@ -11,6 +11,8 @@ dependencies = [
     # extraction / validation
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
+    # validates the phone numbers the scam-report regex finds (Google's libphonenumber)
+    "phonenumbers>=8.13",
     # enrichment lookups (RDAP, certificate transparency and the liveness probe reuse httpx)
     # dnspython is only needed for MX/NS records; enrich/dns_records.py degrades without it.
     "dnspython>=2.7",
@@ -27,9 +29,6 @@ dependencies = [
 [project.optional-dependencies]
 # Browser collector. Needs `playwright install firefox` after syncing.
 browser = ["playwright>=1.49"]
-# Zero-shot NER. Pulls torch + transformers (~2 GB) — deliberately NOT a base dependency,
-# so the pipeline and its tests run without an ML stack. See intel/extract/README.md.
-ml = ["gliner>=0.2.28"]
 
 [project.scripts]
 intel = "intel.cli:app"

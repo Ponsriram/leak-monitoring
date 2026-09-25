@@ -2,8 +2,7 @@
 
 Get the app running, log in, turn on crawling, watch data arrive.
 
-- **How it works:** [ARCHITECTURE.md](ARCHITECTURE.md)
-- **History & known issues:** [ROADMAP.md](ROADMAP.md)
+- **How it works, and known limitations:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
 All commands are PowerShell, run from the repo root (`C:\Users\ponsr\Desktop\leak-monitoring`).
 
@@ -15,7 +14,8 @@ All commands are PowerShell, run from the repo root (`C:\Users\ponsr\Desktop\lea
 npm run infra:up:full
 ```
 
-Starts six containers: Postgres, Redis, Tor, the API, the web app, and the worker. The first
+Starts five containers: Postgres, Redis, Tor, the API (which also serves the web app), and the
+worker. The first
 run builds images and takes a few minutes; after that, seconds.
 
 Check they're healthy:
@@ -43,8 +43,12 @@ Log in with the throwaway local account:
 > ⚠️ Local-only test account. Don't reuse this password, and replace the account before the
 > app is reachable by anyone else.
 
-Or click **Create one** on the sign-in screen (password ≥ 12 characters). There's no sign-up
-gate yet — anyone who can reach the app can register.
+Public sign-up is disabled. To add an account, put its password in `PROVISION_PASSWORD`
+(≥ 12 characters — never on the command line) and run:
+
+```powershell
+npm run user:provision -w @leak/api -- --email you@example.com --name "Analyst"
+```
 
 ---
 
@@ -59,9 +63,17 @@ Pipeline commands run through `npm run intel -- <command>`. See what's available
 npm run intel -- sources list --all
 ```
 
-> 41 sources — 32 probed and responding as of 2026-08-14, plus 9 added 2026-08-19 that are
-> **pending their first reachability probe** (bottom of `sources.yaml`). Enable one and run it
-> to check; `consecutive_failures` climbs immediately for a dead address.
+> 23 sources are listed in `services/intel/sources.yaml` — only sites that actually yield
+> listings. Leak sites move and go offline, and some put a DDoS queue or human check in front of
+> the listing — the crawler records those as failures, naming the gate, and
+> `consecutive_failures` on the Sources page climbs. A site that stays like that, or turns out
+> not to be a leak site, is deleted from the file, and then from the database with:
+>
+> ```powershell
+> npm run intel -- sources sync --prune
+> ```
+>
+> Its collected leaks are kept.
 
 ### Enable
 
@@ -105,8 +117,26 @@ A crawl takes 1–3 minutes over Tor. Check what happened:
 npm run intel -- status
 ```
 
-Then reload **http://localhost:8080** — new leaks appear on Overview and Leaks, and the **Map**
+Then reload **http://localhost:8080** — new leaks appear on Dashboard and Leaks, and the **Map**
 tab plots them by country. The dashboard refreshes every 60 seconds.
+
+### Feeds (no Tor, no enabling needed)
+
+Alongside the crawler, the worker pulls free public feeds on its own schedule:
+
+| Feed | Lands in | How often |
+|---|---|---|
+| URLhaus, ThreatFox, TweetFeed | Bulk Intelligence · IOC | hourly |
+| ransomware.live | World Incidents · Ransomware / General / Dark Web | every 15 minutes |
+| Scam phone-number reports (Mastodon hashtags, r/Scams) | Bulk Intelligence · Mobile Number | every 30 minutes |
+
+To fetch them right now instead of waiting:
+
+```powershell
+npm run intel -- feeds
+```
+
+(`--only iocs`, `--only ransomware` or `--only mobile` for one group.)
 
 ---
 
@@ -136,6 +166,9 @@ Or trigger a crawl from the UI with **Sync now** on the Leaks page.
 | Crawl | `npm run intel -- run` |
 | Enable / disable a source | `npm run intel -- sources enable <slug>` / `disable <slug>` |
 | Back up the database | `npm run infra:backup` |
+| Fill summaries/types from stored pages | `npm run intel -- backfill-descriptions --apply` |
+| Fetch the public feeds now | `npm run intel -- feeds` |
+| Remove sources deleted from sources.yaml | `npm run intel -- sources sync --prune` |
 | Browse the database | `npm run db:studio` |
 
 > An empty dashboard means collection hasn't run yet, not that the app is broken — there is no
@@ -197,8 +230,10 @@ npm test -w @leak/db
 ## If something's wrong
 
 - **`failed to connect to the docker API`** — Docker Desktop isn't running. Start it, retry.
-- **App shows "failed to load"** — the API/web containers aren't up. Fix with `npm run infra:up:full`.
-- **502 from the app** — restart the web container: `npm run infra:restart:web`.
+- **App shows "failed to load" or won't open** — the API container isn't up (it serves the web
+  app too). Fix with `npm run infra:up:full`.
+- **Sign-in fails with "Invalid origin"** — `APP_URL` in `.env` points somewhere other than the
+  address in your browser. Remove it to fall back to http://localhost:8080.
 - **`password authentication failed for user "leak"`** — confirm `DATABASE_URL` in `.env` says port **5433**, not 5432.
 - **Every source fails to crawl** — check Tor: `npm run infra:ps` (the `tor` row should be healthy).
 - **Port already in use** — change `API_PORT` / `WEB_PORT` in `.env`.
@@ -209,8 +244,8 @@ npm test -w @leak/db
 
 | Service | URL |
 |---|---|
-| Web app | http://localhost:8080 |
-| API (dev only) | http://localhost:5000 — internal in Docker |
+| Web app + API | http://localhost:8080 — the API container serves both |
+| API (dev only) | http://localhost:5000, with the Vite dev server on :5173 |
 | Postgres | `localhost:5433` |
 | Redis | `localhost:6379` |
 | Tor | internal only |

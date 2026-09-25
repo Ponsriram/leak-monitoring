@@ -15,18 +15,13 @@ echo "== auth guard =="
 check "GET /api/leaks unauthenticated -> 401"        401 "$(status $API/api/leaks)"
 check "GET /api/stats/summary unauth   -> 401"       401 "$(status $API/api/stats/summary)"
 check "GET /api/sources unauth         -> 401"       401 "$(status $API/api/sources)"
-check "GET /api/alerts unauth          -> 401"       401 "$(status $API/api/alerts)"
+check "GET /api/incidents/general unauth -> 401"     401 "$(status $API/api/incidents/general)"
 check "GET /healthz stays public       -> 200"       200 "$(status $API/healthz)"
 
 echo "== registration is closed =="
 # `auth.ts` sets disableSignUp, so there is no public registration. Accounts are provisioned
 # with `npm run user:provision -w @leak/api`, which CI runs before this script and which is
 # where analyst@example.com below comes from.
-#
-# This section used to sign up that account and then sign in as it. That silently stopped
-# working when sign-up was disabled: the sign-up response was only echoed, never asserted, so
-# the failure surfaced one step later as "sign-in -> 200 (got 401)" and took every
-# authenticated check after it down with it.
 #
 # Asserting the rejection is worth more than asserting a registration ever was. An open
 # sign-up endpoint on a threat-intel console is a real finding, and nothing else in the suite
@@ -68,7 +63,7 @@ check "full-text search works" "yes" "$(curl -s -b "$JAR" "$API/api/leaks?q=nort
 check "bad sort value rejected" 400 "$(status -b "$JAR" "$API/api/leaks?sort=drop_table")"
 check "GET /api/leaks/999999 -> 404" 404 "$(status -b "$JAR" $API/api/leaks/999999)"
 
-echo "== stats (the endpoints that used to return nothing) =="
+echo "== stats =="
 check "leaks-per-day returns 30 zero-filled days" 30 "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-day?days=30" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.length')"
 check "leaks-per-day has non-zero totals" "yes" "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-day?days=60" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.some(d=>d.total>0)?"yes":"no"')"
 check "leaks-per-group returns 6 groups" 6 "$(curl -s -b "$JAR" "$API/api/stats/leaks-per-group" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.length')"
@@ -89,10 +84,6 @@ check "GET /api/sources -> 6" 6 "$(curl -s -b "$JAR" $API/api/sources | node -pe
 # A paused source has no current health to report — its failure count is history, and
 # showing it as failing would put a permanent red row on the dashboard for a site nobody
 # is crawling.
-#
-# This previously asserted "failing" and had been failing in CI since the seed was changed
-# to ship every demo source disabled ("Demo rows must never be crawl targets" — seed.ts).
-# The seed and the route agree; the assertion was the stale one.
 check "disabled beats failing in health" "disabled" "$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.find(s=>s.slug==="akira").health')"
 # ...and the failure count is still reported, so the disabled state hides nothing.
 # (Every seeded source is disabled by design, so `healthy`/`degraded`/`failing` cannot be
@@ -106,21 +97,12 @@ LEAKCOUNT_SUM=$(curl -s -b "$JAR" $API/api/sources | node -pe 'JSON.parse(requir
 TOTAL_LEAKS=$(curl -s -b "$JAR" $API/api/stats/summary | node -pe 'JSON.parse(require("fs").readFileSync(0)).totalLeaks')
 check "leakCount sums to the leak total" "$TOTAL_LEAKS" "$LEAKCOUNT_SUM"
 
-echo "== alerts =="
-ALERT_ID=$(curl -s -b "$JAR" -X POST $API/api/alerts -H 'content-type: application/json' \
-  -d '{"name":"Northwind watch","matchKind":"substring","matchValue":"NORTHWIND","channel":"email","target":"analyst@example.com"}' \
-  | node -pe 'JSON.parse(require("fs").readFileSync(0)).id')
-check "created alert has an id" "yes" "$( [ -n "$ALERT_ID" ] && [ "$ALERT_ID" != "undefined" ] && echo yes || echo no)"
-check "matchValue normalised to lowercase" "northwind" "$(curl -s -b "$JAR" $API/api/alerts | node -pe 'JSON.parse(require("fs").readFileSync(0)).data[0].matchValue')"
-check "email channel rejects a URL target" 400 "$(status -b "$JAR" -X POST $API/api/alerts -H 'content-type: application/json' \
-  -d '{"name":"bad","matchKind":"exact","matchValue":"x","channel":"email","target":"http://not-an-email"}')"
-check "unknown matchKind rejected" 400 "$(status -b "$JAR" -X POST $API/api/alerts -H 'content-type: application/json' \
-  -d '{"name":"bad","matchKind":"regex","matchValue":"(a+)+$","channel":"email","target":"a@b.co"}')"
-check "PATCH own alert -> 200" 200 "$(status -b "$JAR" -X PATCH $API/api/alerts/$ALERT_ID -H 'content-type: application/json' -d '{"enabled":false}')"
-check "PATCH nonexistent -> 404" 404 "$(status -b "$JAR" -X PATCH $API/api/alerts/999999 -H 'content-type: application/json' -d '{"enabled":false}')"
-check "GET /api/alerts/events -> 200" 200 "$(status -b "$JAR" $API/api/alerts/events)"
-check "DELETE own alert -> 204" 204 "$(status -b "$JAR" -X DELETE $API/api/alerts/$ALERT_ID)"
-check "DELETE again -> 404"     404 "$(status -b "$JAR" -X DELETE $API/api/alerts/$ALERT_ID)"
+echo "== incidents =="
+check "GET /api/incidents/general -> 200" 200 "$(status -b "$JAR" $API/api/incidents/general)"
+check "every row carries a summary" "yes" "$(curl -s -b "$JAR" "$API/api/incidents/general?limit=50" | node -pe 'const d=JSON.parse(require("fs").readFileSync(0)).data; d.length>0 && d.every(r=>typeof r.summary==="string" && r.summary.length>0) ? "yes":"no"')"
+check "every row carries at least one type" "yes" "$(curl -s -b "$JAR" "$API/api/incidents/general?limit=50" | node -pe 'const d=JSON.parse(require("fs").readFileSync(0)).data; d.length>0 && d.every(r=>Array.isArray(r.incidentTypes) && r.incidentTypes.length>0) ? "yes":"no"')"
+# The alerts feature was removed; its route must not linger as a half-working endpoint.
+check "alerts route is gone -> 404" 404 "$(status -b "$JAR" $API/api/alerts)"
 
 echo "== error shape =="
 check "404 body has requestId" "yes" "$(curl -s $API/api/nope | node -pe 'JSON.parse(require("fs").readFileSync(0)).requestId?"yes":"no"')"

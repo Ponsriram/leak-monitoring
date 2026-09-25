@@ -26,22 +26,27 @@ Open **http://localhost:8080**. Full walkthrough, credentials and crawling instr
 | Document | What's in it |
 |---|---|
 | **[START.md](START.md)** | Run the app, log in, turn on crawling, troubleshooting |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | How it works, folder by folder, and why |
-| **[ROADMAP.md](ROADMAP.md)** | Rebuild history, decisions log, known issues |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | How it works, folder by folder, why, and known limitations |
 
 ---
 
 ## What it does
 
 Monitors ransomware leak sites on Tor, extracts victim disclosures, and surfaces them
-through a dashboard with keyword alerting.
+through a threat-intel console.
 
 - **Automated collection** — crawls monitored onion services on a schedule, over Tor
 - **Content-hash short circuit** — unchanged pages cost one fetch and stop there
 - **Deduplication** — re-running never duplicates; `first_seen_at` is written once, so
   "what's new" is actually answerable
 - **Dashboard** — leak volume over time, activity by group, live source health
-- **Alerting** — typed match rules (never a user-supplied regex), idempotent delivery
+- **World Incidents** — General, Ransomware and Dark Web tables, enriched with WHOIS, site
+  status and web technologies; a live threat map
+- **Bulk Intelligence** — company search with an on-demand passive lookup, IOC feeds
+  (abuse.ch ThreatFox and URLhaus) with registry WHOIS
+- **Incident summaries & types** — each listing's own description from the leak site, and
+  multi-valued incident types (Ransomware, Data Leak, Data Breach, Hacked, Sale, …) derived
+  from its status, stated size and wording
 
 ## How it's built
 
@@ -63,13 +68,14 @@ correctly, and serves the results.
 
 **Extraction quality is the open problem.** On dense index pages the linker mis-pairs victim
 names with domains from neighbouring listings, so crawled rows are not yet reliable
-intelligence. Cause and planned fix are in [ROADMAP.md](ROADMAP.md).
+intelligence. See *Known limitations* in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## ⚠️ Before you expose this
 
-- **No sign-up gate** — anyone who can reach the app can create an account. Set
-  `disableSignUp: true` in [apps/api/src/auth.ts](apps/api/src/auth.ts).
-- **Change the defaults** — `POSTGRES_PASSWORD` and `AUTH_SECRET` in `.env`.
+- **Accounts are provisioned, not signed up.** Public sign-up is disabled; create accounts
+  with `npm run user:provision -w @leak/api` (see [START.md](START.md)).
+- **Change the defaults** — `POSTGRES_PASSWORD` and `AUTH_SECRET` in `.env`, and replace the
+  local test account.
 - **Sources ship disabled.** Crawling live criminal infrastructure over Tor is a deliberate
   decision about your legal and operational position. Nothing is fetched until you enable it.
 

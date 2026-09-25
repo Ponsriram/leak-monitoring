@@ -7,8 +7,7 @@ const app = await buildApp();
  * Graceful shutdown.
  *
  * Fastify's `close()` stops accepting connections, drains in-flight requests, then runs
- * onClose hooks — which is where the database pool is released. The old server had none of
- * this and relied on the process being killed.
+ * onClose hooks — which is where the database pool is released.
  */
 let shuttingDown = false;
 

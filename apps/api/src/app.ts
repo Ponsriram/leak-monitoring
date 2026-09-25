@@ -13,12 +13,13 @@ import { appConfig } from "./config.js";
 import authPlugin from "./plugins/auth.js";
 import dbPlugin from "./plugins/db.js";
 import errorHandler from "./plugins/error-handler.js";
-import { alertRoutes } from "./routes/alerts.js";
+import webPlugin from "./plugins/web.js";
 import { crawlRoutes } from "./routes/crawl.js";
 import { healthRoutes } from "./routes/health.js";
 import { incidentRoutes } from "./routes/incidents.js";
 import { iocRoutes } from "./routes/iocs.js";
 import { leakRoutes } from "./routes/leaks.js";
+import { mobileRoutes } from "./routes/mobile.js";
 import { searchRoutes } from "./routes/search.js";
 import { sourceRoutes } from "./routes/sources.js";
 import { statsRoutes } from "./routes/stats.js";
@@ -50,7 +51,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     // A request id on every log line and every error response, so a user-reported failure
     // can be traced to its logs.
     genReqId: () => randomUUID(),
-    trustProxy: appConfig.isProduction,
+    trustProxy: appConfig.TRUST_PROXY,
     // Reject oversized bodies before they're parsed.
     bodyLimit: 1_048_576, // 1 MB
   }).withTypeProvider<ZodTypeProvider>();
@@ -63,7 +64,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sensible);
 
   await app.register(helmet, {
-    // The API serves JSON only; CSP here would just be noise.
+    // Off, as it was when nginx served the app. A CSP for the dashboard needs its own pass
+    // over what the React build loads; a guessed one would break pages silently.
     contentSecurityPolicy: false,
   });
 
@@ -91,12 +93,15 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(leakRoutes);
   await app.register(statsRoutes);
   await app.register(sourceRoutes);
-  await app.register(alertRoutes);
   await app.register(crawlRoutes);
   await app.register(incidentRoutes);
   await app.register(iocRoutes);
+  await app.register(mobileRoutes);
   await app.register(searchRoutes);
   await app.register(streamRoutes);
+
+  // Last: its catch-all must not shadow anything above.
+  await app.register(webPlugin);
 
   return app;
 }

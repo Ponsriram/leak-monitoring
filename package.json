@@ -22,8 +22,6 @@
     "infra:up:full": "docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d --build",
     "infra:down": "docker compose --env-file .env -f infra/docker-compose.yml --profile full down",
     "infra:ps": "docker compose --env-file .env -f infra/docker-compose.yml --profile full ps",
-    "infra:restart:web": "docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d web",
-    "tunnel": "powershell -ExecutionPolicy Bypass -File infra/tunnel.ps1",
     "infra:logs": "docker compose --env-file .env -f infra/docker-compose.yml --profile full logs -f",
     "infra:backup": "bash scripts/backup-db.sh",
     "intel": "docker compose --env-file .env -f infra/docker-compose.yml --profile full up -d && docker compose --env-file .env -f infra/docker-compose.yml --profile full run --rm worker intel"

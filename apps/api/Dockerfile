@@ -1,5 +1,5 @@
 # Build context is the REPO ROOT, not apps/api — the API depends on the @leak/db workspace,
-# which lives outside its own directory.
+# which lives outside its own directory, and the image also carries the built web app.
 #
 #   docker build -f apps/api/Dockerfile .
 
@@ -33,6 +33,25 @@ COPY apps/api apps/api
 
 RUN npm run build -w @leak/db && npm run build -w @leak/api
 
+# ---------- web app ----------
+# The dashboard ships in this image and the API serves it (src/plugins/web.ts). Its own stage,
+# so a change to one app does not rebuild the other.
+FROM manifests AS web-build
+RUN npm ci --workspace @leak/web --include-workspace-root
+
+COPY apps/web apps/web
+
+# Vite bakes VITE_* values in at build time — they are not runtime configuration. Empty
+# means "same origin", which is what we want when the API serves the app itself.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+
+# gzip copies beside the assets, sent to browsers that accept them. The JS is ~1.4 MB
+# uncompressed and about a third of that gzipped.
+RUN npm run build -w @leak/web \
+    && find apps/web/dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.svg' \) \
+       -exec gzip -9 -k {} +
+
 # ---------- runtime ----------
 FROM node:24-alpine AS runtime
 WORKDIR /repo
@@ -56,6 +75,9 @@ COPY --from=prod-deps /repo /repo
 COPY --from=build /repo/packages/db/dist ./packages/db/dist
 COPY --from=build /repo/packages/db/migrations ./packages/db/migrations
 COPY --from=build /repo/apps/api/dist ./apps/api/dist
+COPY --from=web-build /repo/apps/web/dist ./apps/web/dist
+
+ENV WEB_DIST_DIR=/repo/apps/web/dist
 
 USER node
 

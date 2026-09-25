@@ -2,8 +2,7 @@
  * Environment configuration, validated once at boot.
  *
  * The point of this file is that the process refuses to start on a bad config rather than
- * failing later at an arbitrary request. The old server hardcoded its Mongo URI and SMTP
- * credentials in source and had no notion of environments at all.
+ * failing later at an arbitrary request. Nothing environment-specific lives in source.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,8 +40,20 @@ const envSchema = z.object({
   API_PORT: z.coerce.number().int().min(1).max(65535).default(5000),
 
   /**
-   * Explicit allowlist. The old code shipped `cors()` with no options plus a literal
-   * `Access-Control-Allow-Origin: *`, which is what made every endpoint readable by any page.
+   * Built web app to serve from this process (the container sets it). Unset in development,
+   * where Vite serves the app instead.
+   */
+  WEB_DIST_DIR: z.string().min(1).optional(),
+
+  /**
+   * Trust X-Forwarded-For. Only true behind a reverse proxy: with the API facing browsers
+   * directly, trusting it lets any client pick its own IP and walk past the rate limits.
+   */
+  TRUST_PROXY: z.stringbool().default(false),
+
+  /**
+   * Explicit allowlist. A wildcard origin would make every endpoint readable by any page
+   * the analyst happens to have open.
    */
   CORS_ORIGINS: csvList("http://localhost:5173"),
 

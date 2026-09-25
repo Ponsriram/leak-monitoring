@@ -5,10 +5,10 @@
 #       API and web app on the host with hot reload against these.
 #
 #   docker compose -f infra/docker-compose.yml --profile full up -d --build
-#       The whole system — adds tor, api, web and the collection worker. Nothing to run on
-#       the host; open http://localhost:8080.
+#       The whole system — adds tor, the api (which also serves the web app) and the
+#       collection worker. Nothing to run on the host; open http://localhost:8080.
 #
-# Profiles exist so `up` keeps doing what it did before rather than suddenly building four
+# Profiles exist so `up` keeps doing what it did before rather than suddenly building three
 # images. From the repo root there are npm scripts for both (`infra:up`, `infra:up:full`).
 
 name: leakmon
@@ -87,37 +87,23 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 5000
       LOG_LEVEL: info
-      # The browser reaches the API through the web container's nginx, so the origins that
-      # can appear are the web app's.
+      # The API serves the web app too, so the only origin a browser can arrive from is this
+      # one.
       #
-      # localhost is listed unconditionally, in addition to APP_URL. Setting APP_URL to a
-      # Cloudflare tunnel used to *replace* the local origin rather than add to it, so
-      # publishing a tunnel silently broke signing in at http://localhost:8080 with
-      # "Invalid origin" — the two are the same app and both are legitimate ways to reach
-      # it. A duplicate entry when APP_URL is already localhost is harmless.
+      # localhost is listed unconditionally, in addition to APP_URL, so setting APP_URL to
+      # a public address never breaks signing in at http://localhost:8080 with "Invalid
+      # origin". A duplicate entry when APP_URL is already localhost is harmless.
       CORS_ORIGINS: ${APP_URL:-http://localhost:8080},http://localhost:${WEB_PORT:-8080}
       AUTH_URL: ${APP_URL:-http://localhost:8080}
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in the repo-root .env}
+      # Set to true only if you put a reverse proxy in front of this port.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     depends_on:
       postgres:
         condition: service_healthy
-    expose:
-      - "5000"
-
-  web:
-    profiles: ["full"]
-    build:
-      context: ..
-      dockerfile: apps/web/Dockerfile
-      args:
-        # Empty: nginx proxies /api to the api service, so the app talks to its own origin.
-        VITE_API_URL: ""
-    container_name: leakmon-web
-    restart: unless-stopped
     ports:
-      - "${WEB_PORT:-8080}:80"
-    depends_on:
-      - api
+      # Web app and API on one port: the dashboard at /, the API under /api.
+      - "${WEB_PORT:-8080}:5000"
 
   # ---------------------------------------------------------------- collection
 

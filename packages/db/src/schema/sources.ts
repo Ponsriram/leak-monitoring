@@ -14,10 +14,8 @@ import {
 export const collectorKind = pgEnum("collector_kind", ["http", "browser"]);
 
 /**
- * The onion sites we monitor.
- *
- * This table replaces the 83 URLs that currently live inside a notebook cell, and it is what
- * backs the dashboard's "Ransomware Groups Index" page (today: ten hardcoded fake rows).
+ * The onion sites we monitor, loaded from `services/intel/sources.yaml`. Backs the Sources
+ * page.
  */
 export const sources = pgTable(
   "sources",
@@ -42,9 +40,8 @@ export const sources = pgTable(
     collector: collectorKind("collector").notNull().default("http"),
 
     /**
-     * How to walk pages. `none` means the base URL is the whole listing.
-     * The old crawler blindly appended `?page=N` to every site, which is why it produced
-     * duplicate and empty pages.
+     * How to walk pages. `none` means the base URL is the whole listing — appending `?page=N`
+     * to a site that does not paginate only fetches duplicates and empty pages.
      */
     paginationStyle: text("pagination_style").notNull().default("none"),
     maxPages: integer("max_pages").notNull().default(10),

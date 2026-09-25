@@ -110,9 +110,10 @@ export const streamRoutes: FastifyPluginAsyncZod = async (fastify) => {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
-        // nginx buffers proxied responses by default, which holds every event until the
-        // buffer fills — an event stream that arrives in batches minutes late is worse than
-        // no event stream, because it looks like it is working.
+        // Nothing proxies this today, but nginx — the usual choice to put in front — buffers
+        // proxied responses by default, which holds every event until the buffer fills. An
+        // event stream that arrives in batches minutes late is worse than no event stream,
+        // because it looks like it is working.
         "X-Accel-Buffering": "no",
       });
 

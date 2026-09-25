@@ -18,8 +18,7 @@ export type CreateDbOptions = {
 /**
  * Build a Drizzle client plus the underlying connection.
  *
- * The raw `sql` handle is returned alongside so callers can close the pool on shutdown —
- * the old server never closed anything and relied on process death.
+ * The raw `sql` handle is returned alongside so callers can close the pool on shutdown.
  */
 export function createDb(url: string, options: CreateDbOptions = {}) {
   const sql = postgres(url, {

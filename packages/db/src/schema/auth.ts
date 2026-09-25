@@ -38,7 +38,7 @@ export const user = pgTable(
       .defaultNow()
       .$onUpdate(() => new Date()),
   },
-  // The old code had no unique index on email, so two accounts could share an address.
+  // One account per address.
   (t) => [uniqueIndex("user_email_key").on(t.email)],
 );
 
@@ -84,7 +84,7 @@ export const account = pgTable(
 
     /**
      * Password hash, written and verified by Better Auth (scrypt by default).
-     * Never a plaintext password — which is exactly what the old `users` collection stored.
+     * Never a plaintext password.
      */
     password: text("password"),
 

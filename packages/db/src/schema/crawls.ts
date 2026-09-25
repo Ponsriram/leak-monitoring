@@ -29,8 +29,8 @@ export const crawlStatus = pgEnum("crawl_status", [
 export const crawlDepth = pgEnum("crawl_depth", ["shallow", "deep"]);
 
 /**
- * One row per crawl attempt. This is the provenance the old system had none of —
- * "which site did this leak come from, and when did we last successfully reach it?"
+ * One row per crawl attempt. This is the provenance — "which site did this leak come from,
+ * and when did we last successfully reach it?"
  */
 export const crawlRuns = pgTable(
   "crawl_runs",

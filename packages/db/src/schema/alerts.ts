@@ -14,10 +14,9 @@ import { leaks } from "./leaks.js";
 /**
  * Typed matchers — deliberately NOT a regex.
  *
- * The old code passed the user's keyword straight into `{ $regex: keyword }`, unescaped, and
- * ran it against every document every five seconds. A keyword like `(a+)+$` was catastrophic
- * backtracking against the whole collection. Enumerating match kinds removes the whole class
- * of problem: none of these can be turned into a pathological pattern.
+ * A user-supplied regex like `(a+)+$` is catastrophic backtracking against the whole table.
+ * Enumerating match kinds removes the whole class of problem: none of these can be turned
+ * into a pathological pattern.
  */
 export const matchKind = pgEnum("match_kind", [
   /** Whole-field equality, case-insensitive. */
@@ -66,7 +65,7 @@ export const alerts = pgTable(
 );
 
 /**
- * One row per (alert, leak) pair that fired. Replaces the old `sentAlerts` collection.
+ * One row per (alert, leak) pair that fired.
  *
  * The UNIQUE constraint is what makes delivery idempotent: a retry, a worker restart, or a
  * duplicate queue message cannot send the same person the same leak twice.

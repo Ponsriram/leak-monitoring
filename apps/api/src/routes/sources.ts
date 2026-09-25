@@ -7,8 +7,7 @@ import { requireAuth } from "../plugins/auth.js";
 /**
  * Monitored sources and their health.
  *
- * This backs the "Ransomware Groups Index" page, which in the old app was ten hardcoded rows
- * with invented "last seen 2 hours ago" values.
+ * This backs the Sources page. Every value is read from `sources` and its crawl history.
  */
 export const sourceRoutes: FastifyPluginAsyncZod = async (fastify) => {
   fastify.addHook("preHandler", requireAuth);

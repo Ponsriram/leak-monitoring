@@ -12,8 +12,8 @@ type ZodIssueLike = { path: PropertyKey[]; message: string };
 /**
  * One error shape for the whole API.
  *
- * The old server did `res.status(500).send("Error fetching leaks: " + err.message)`, which
- * leaks driver internals to the client and gives the frontend nothing structured to branch on.
+ * Driver messages never reach the client — they leak internals and give the frontend nothing
+ * structured to branch on. Every error carries a status, a message and the request id.
  */
 const errorHandlerPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.setErrorHandler(

@@ -4,7 +4,7 @@ import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { requireAuth } from "../plugins/auth.js";
 
-/** Hard ceiling. The old `/api/leaks` returned the entire collection with no limit at all. */
+/** Hard ceiling on page size, so no request can ask for the whole table. */
 const MAX_LIMIT = 100;
 
 const listQuery = z.object({

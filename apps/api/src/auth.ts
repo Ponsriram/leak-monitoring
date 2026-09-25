@@ -6,10 +6,9 @@ import { appConfig } from "./config.js";
 /**
  * Better Auth owns credentials, sessions and password hashing.
  *
- * Deliberately not hand-rolled. The old server stored plaintext passwords and compared them
- * with `findOne({ username, password })`; the replacement should be a maintained library, not
- * our own JWT plumbing. Better Auth hashes with scrypt by default and manages session
- * lifetime, rotation and revocation.
+ * Deliberately not hand-rolled: credentials belong to a maintained library, not our own JWT
+ * plumbing. Better Auth hashes with scrypt by default and manages session lifetime, rotation
+ * and revocation.
  *
  * Its own connection: auth runs outside the request lifecycle (the CLI, background session
  * cleanup), so it must not depend on a Fastify instance existing.

@@ -9,11 +9,9 @@
  * ## Why this exists
  *
  * `auth.ts` sets `disableSignUp: true`, so the public sign-up route is closed. That is the
- * right default for a threat-intel console, but it left the product with no way to create
- * any account at all: a fresh deployment had a login form and nothing that could log into
- * it. CI hit the same wall from the other side — `scripts/smoke-api.sh` used to sign up and
- * then sign in as the account it had just made, which stopped working the moment sign-up
- * was disabled.
+ * right default for a threat-intel console, and this script is the one way to create an
+ * account — for a fresh deployment, and for CI, where `scripts/smoke-api.sh` signs in as the
+ * account provisioned here.
  *
  * ## Why it goes through better-auth's context rather than writing rows
  *

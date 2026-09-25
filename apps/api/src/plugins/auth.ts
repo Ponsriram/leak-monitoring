@@ -76,10 +76,8 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
 export default fp(authPlugin, { name: "auth" });
 
 /**
- * Route guard. Attach as `preHandler` on anything that must not be public.
- *
- * The old app had no equivalent: `/dashboard` and every `/api` endpoint were reachable by
- * anyone who typed the URL.
+ * Route guard. Attach as `preHandler` on anything that must not be public — which is every
+ * route except the health checks.
  */
 export const requireAuth: preHandlerAsyncHookHandler = async (
   request: FastifyRequest,

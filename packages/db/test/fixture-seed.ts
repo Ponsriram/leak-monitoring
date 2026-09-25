@@ -5,18 +5,13 @@
  * throwaway Postgres with no Tor and therefore no way to collect anything. An API smoke test
  * against an empty database verifies almost nothing — it cannot check that pagination caps
  * a real result set, that a group filter returns only that group, that full-text search
- * matches, or that per-source `leakCount` correlates (a bug that once passed review because
- * every count was wrong in the same direction). Those checks need rows, so CI makes some.
+ * matches, or that per-source `leakCount` correlates. Those checks need rows, so CI makes
+ * some.
  *
- * It used to live at `src/seed.ts` and be wired to `npm run db:seed`, one word away from any
- * developer's real database. Running it there mixed 144 invented victims — Northwind
- * Logistics, Contoso Manufacturing, the Microsoft sample-company set — into genuinely
- * collected intelligence, where they were indistinguishable at a glance from real listings
- * and quietly inflated every dashboard total, chart and filter dropdown built on that table.
- *
- * So it now lives under `test/`, out of the package's shipped surface, and refuses outright
- * to run against a database containing any leak it did not create. Re-polluting a real
- * dataset is not something a flag should make convenient.
+ * Its 144 invented victims — Northwind Logistics, Contoso Manufacturing — would be
+ * indistinguishable at a glance from real listings and would inflate every dashboard total.
+ * So it lives under `test/`, out of the package's shipped surface, and refuses outright to
+ * run against a database containing any leak it did not create.
  */
 import crypto from "node:crypto";
 import path from "node:path";
@@ -181,8 +176,7 @@ try {
     }
   }
 
-  // onConflictDoNothing makes the whole script re-runnable — the very property the old
-  // notebook lacked, which is why every run duplicated the dataset.
+  // onConflictDoNothing makes the whole script re-runnable without duplicating anything.
   await db.insert(leaks).values(rows).onConflictDoNothing({ target: leaks.dedupeHash });
 
   const [{ count: leakCount } = { count: 0 }] = await db.execute<{ count: number }>(

@@ -15,9 +15,8 @@ import { sources } from "./sources.js";
 /**
  * The state of a victim's listing on the leak site.
  *
- * `negotiating` was split out of `removed`: the extractor used to map "paid" and
- * "negotiations ongoing" onto `removed`, which said the opposite of what the page meant —
- * a listing under negotiation is still up, and is the most actionable state there is.
+ * `negotiating` is distinct from `removed`: "paid" and "negotiations ongoing" mean the
+ * listing is still up, and is the most actionable state there is.
  *
  * None of these mean "we checked and the listing is gone". `unknown` means the page printed
  * no status wording at all, which is the common case; whether a listing is still up is
@@ -34,7 +33,9 @@ export const leakStatus = pgEnum("leak_status", [
 
 /** How a given leak's fields were derived. Stored so a bad extractor run can be identified later. */
 export type ExtractionMeta = {
-  method: "gliner" | "llm" | "manual" | "migrated";
+  method: "rules" | "llm" | "manual" | "migrated" | "feed";
+  /** Which published feed the row came from, when `method` is "feed" (e.g. "ransomware.live"). */
+  feed?: string;
   modelVersion?: string;
   confidence?: number;
   /** Raw spans as extracted, before normalization — kept for debugging bad rows. */
@@ -44,13 +45,11 @@ export type ExtractionMeta = {
 /**
  * The canonical leak entity.
  *
- * Three things here are load-bearing and each fixes a specific defect in the old system:
+ * Three things here are load-bearing:
  *
- *   `dedupeHash`   UNIQUE, so the loader can upsert. The old notebook called insert_one() in a
- *                  loop with no key, which duplicated the entire dataset on every run.
- *   `publishedAt`  a real timestamptz. The old code stored whatever text the site used
- *                  ("10 Feb, 2025"), so `$gte` against a date matched nothing and the weekly
- *                  chart silently rendered empty.
+ *   `dedupeHash`   UNIQUE, so the loader can upsert. Re-running a crawl never duplicates.
+ *   `publishedAt`  a real timestamptz, so date ranges and the per-day chart work. The site's
+ *                  original text ("10 Feb, 2025") is kept in `publishedAtRaw`.
  *   `firstSeenAt`  set on INSERT only. Without it "what's new since yesterday" — the entire
  *                  premise of a monitoring product — has no definition.
  */
@@ -93,6 +92,20 @@ export const leaks = pgTable(
     leakType: text("leak_type").notNull().default("ransomware"),
     /** Normalized from "1.2 TB" etc. Nullable because plenty of listings don't state a size. */
     leakSizeBytes: bigint("leak_size_bytes", { mode: "number" }),
+
+    /**
+     * The listing's own description, as printed under the victim on the leak site.
+     *
+     * Null when the page gave the victim no prose — the API then composes one from the
+     * structured fields and says so, rather than leaving the column blank.
+     */
+    summary: text("summary"),
+    /**
+     * What kind of incident this is, multi-valued: a published ransomware listing is also a
+     * data leak. Slugs in `services/intel/intel/extract/describe.py` order. `leak_type` stays
+     * as the single source-level classification the Ransomware section filters on.
+     */
+    incidentTypes: text("incident_types").array().notNull().default(sql`'{}'::text[]`),
 
     extraction: jsonb("extraction").$type<ExtractionMeta>(),
 
@@ -153,6 +166,9 @@ export const leaks = pgTable(
     index("leaks_victim_domain_trgm_idx")
       .using("gin", sql`${t.victimDomain} gin_trgm_ops`)
       .where(sql`${t.victimDomain} is not null`),
+
+    // The incident-type filter is an array containment test.
+    index("leaks_incident_types_idx").using("gin", t.incidentTypes),
   ],
 );
 

@@ -1,14 +1,13 @@
 /**
  * Schema tests against a real Postgres engine (PGlite = Postgres compiled to WASM).
  *
- * These aren't smoke tests. Each one pins down a constraint that exists specifically because
- * its absence caused a live defect in the old system:
+ * These aren't smoke tests. Each one pins down a constraint the system depends on:
  *
- *   - duplicate leaks on every pipeline run   -> UNIQUE (dedupe_hash) + upsert
- *   - "what's new" was unanswerable           -> first_seen_at set once, last_seen_at touched
- *   - the same alert email could be re-sent    -> UNIQUE (alert_id, leak_id)
- *   - two accounts could share an email        -> UNIQUE (user.email)
- *   - status was free text                     -> leak_status enum
+ *   - re-running the pipeline never duplicates -> UNIQUE (dedupe_hash) + upsert
+ *   - "what's new" is answerable               -> first_seen_at set once, last_seen_at touched
+ *   - an alert is recorded once per leak       -> UNIQUE (alert_id, leak_id)
+ *   - one account per email                    -> UNIQUE (user.email)
+ *   - status is a closed set                   -> leak_status enum
  */
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -122,7 +121,7 @@ describe("leaks.dedupe_hash", () => {
 
     await db.insert(schema.leaks).values(values);
 
-    // The old pipeline had no constraint here, so a second run silently doubled the dataset.
+    // Without this constraint a second run would silently double the dataset.
     await assert.rejects(
       () => db.insert(schema.leaks).values(values),
       pgError(/duplicate key value violates unique constraint/),
@@ -260,7 +259,7 @@ describe("user.email", () => {
     await assert.rejects(
       () => makeUser("user-b", "shared@example.com"),
       pgError(/duplicate key value violates unique constraint/),
-      "the old schema allowed this",
+      "a second account on the same email must be rejected",
     );
   });
 });
@@ -425,5 +424,52 @@ describe("hunt jobs", () => {
       .returning();
     assert.equal(job!.status, "queued");
     assert.equal(job!.findingsCount, 0);
+  });
+});
+
+describe("mobile_numbers", () => {
+  const report = {
+    number: "+442085402764",
+    numberDisplay: "+44 20 8540 2764",
+    numberRaw: "0208 540 2764",
+    threatTypes: ["Vishing"],
+    targetAudience: ["General Public"],
+    details: "Had a call from a scammer on 0208 540 2764.",
+    source: "mastodon",
+    sourceUrl: "https://mastodon.example/@someone/1",
+  };
+
+  it("rejects a report with no threat type or no target audience", async () => {
+    await assert.rejects(
+      db.insert(schema.mobileNumbers).values({ ...report, threatTypes: [] }),
+      pgError(/mobile_numbers_threat_types_present/),
+    );
+    await assert.rejects(
+      db.insert(schema.mobileNumbers).values({ ...report, targetAudience: [] }),
+      pgError(/mobile_numbers_target_audience_present/),
+    );
+  });
+
+  it("rejects a report with blank details", async () => {
+    await assert.rejects(
+      db.insert(schema.mobileNumbers).values({ ...report, details: "   " }),
+      pgError(/mobile_numbers_details_present/),
+    );
+  });
+
+  it("keeps one row per number per post, and separate rows per post", async () => {
+    await db.insert(schema.mobileNumbers).values(report);
+    await assert.rejects(
+      db.insert(schema.mobileNumbers).values(report),
+      pgError(/duplicate key value/),
+    );
+    await db
+      .insert(schema.mobileNumbers)
+      .values({ ...report, sourceUrl: "https://mastodon.example/@other/2" });
+
+    const result = await db.execute<{ count: number }>(
+      sql`select count(*)::int as count from mobile_numbers where number = ${report.number}`,
+    );
+    assert.equal(result.rows[0]!.count, 2);
   });
 });

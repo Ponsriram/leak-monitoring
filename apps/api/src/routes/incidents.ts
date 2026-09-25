@@ -30,11 +30,11 @@ const listQuery = z.object({
   status: z.string().min(1).max(30).optional(),
   siteStatus: z.enum(["live", "down", "error", "not_scanned"]).optional(),
   /**
-   * `leak_type`, free text rather than an enum.
+   * One incident type, matched against the `incident_types` array.
    *
-   * The column is a plain text column with a default, not a pgEnum — a closed list here
-   * would reject a classification the pipeline had already written to the row, and the
-   * filter would silently return nothing for it.
+   * Free text rather than an enum: the array holds whatever the pipeline classified, and a
+   * closed list here would reject a type already written to rows, so the filter would
+   * silently return nothing for it.
    */
   type: z.string().min(1).max(40).optional(),
   q: z.string().min(1).max(200).optional(),
@@ -59,6 +59,12 @@ const incidentRow = z.object({
   leakSizeBytes: z.number().nullable(),
   sourceSlug: z.string().nullable(),
   sourceUrl: z.string().nullable(),
+  /** Never empty: the listing's own description, or one composed from the fields below. */
+  summary: z.string(),
+  /** `listing` is the leak site's own words; `composed` was written here from the fields. */
+  summarySource: z.enum(["listing", "composed"]),
+  /** Every classification the row carries, in canonical order. Never empty. */
+  incidentTypes: z.array(z.string()),
 
   // --- from domain_enrichment, all nullable until the sweep reaches this domain ---
   siteStatus: z.string().nullable(),
@@ -95,8 +101,12 @@ function incidentColumns() {
     status: leaks.status,
     leakType: leaks.leakType,
     leakSizeBytes: leaks.leakSizeBytes,
-    sourceSlug: sources.slug,
+    // The crawled source's slug, or for a row taken from a feed, the feed's name
+    // ("ransomware.live") — so the Source column is never blank for a row we did not crawl.
+    sourceSlug: sql<string | null>`coalesce(${sources.slug}, ${leaks.extraction}->>'feed')`,
     sourceUrl: leaks.sourceUrl,
+    summary: leaks.summary,
+    incidentTypes: leaks.incidentTypes,
     siteStatus: domainEnrichment.status,
     httpStatus: domainEnrichment.httpStatus,
     technologies: domainEnrichment.technologies,
@@ -115,7 +125,7 @@ function buildConditions(filters: Filters, extra: SQL[] = []): SQL | undefined {
   if (filters.country) conditions.push(eq(leaks.victimCountry, filters.country));
   if (filters.sector) conditions.push(eq(leaks.victimSector, filters.sector));
   if (filters.status) conditions.push(sql`${leaks.status}::text = ${filters.status}`);
-  if (filters.type) conditions.push(eq(leaks.leakType, filters.type));
+  if (filters.type) conditions.push(sql`${leaks.incidentTypes} @> array[${filters.type}]::text[]`);
   if (filters.siteStatus) conditions.push(sql`${domainEnrichment.status}::text = ${filters.siteStatus}`);
   if (filters.from) conditions.push(gte(leaks.firstSeenAt, filters.from));
   if (filters.to) conditions.push(lte(leaks.firstSeenAt, filters.to));
@@ -188,6 +198,11 @@ export const incidentRoutes: FastifyPluginAsyncZod = async (fastify) => {
         return {
           data: rows.map((row) => ({
             ...row,
+            summary: row.summary ?? composeSummary(row),
+            summarySource: row.summary ? ("listing" as const) : ("composed" as const),
+            // A row the classifier has not reached yet still has the type its source
+            // guarantees; an empty chip cell would read as "no idea what this is".
+            incidentTypes: row.incidentTypes.length > 0 ? row.incidentTypes : [row.leakType],
             whoisContacts: (row.whoisContacts as Record<string, string[]> | null) ?? null,
           })),
           pagination: {
@@ -425,4 +440,80 @@ function titleCase(value: string): string {
     .filter(Boolean)
     .map((word) => word[0]!.toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+type SummaryFields = {
+  actorGroup: string;
+  victimName: string | null;
+  victimDomain: string | null;
+  victimCountry: string | null;
+  victimSector: string | null;
+  status: string;
+  publishedAt: Date | null;
+  firstSeenAt: Date;
+  leakSizeBytes: number | null;
+};
+
+const STATUS_SENTENCE: Record<string, string> = {
+  published: "The listing states the data has been published.",
+  sold: "The listing states the data has been sold.",
+  countdown: "The listing is on a countdown to publication.",
+  negotiating: "The listing states negotiations are under way.",
+  removed: "The listing has since been removed from the site.",
+};
+
+/**
+ * A summary for a listing that printed no description of its own.
+ *
+ * Written only from fields we hold, one sentence per field, and each sentence omitted when
+ * its field is empty — so it can never say more than the row does. The response marks it
+ * `composed` so the UI can say it was not the leak site's wording.
+ */
+function composeSummary(row: SummaryFields): string {
+  const victim =
+    row.victimName && row.victimDomain
+      ? `${row.victimName} (${row.victimDomain})`
+      : (row.victimName ?? row.victimDomain ?? "an unnamed organisation");
+  const when = row.publishedAt
+    ? `on ${formatDay(row.publishedAt)}`
+    : `(first collected ${formatDay(row.firstSeenAt)})`;
+
+  const sentences = [`The ${row.actorGroup} group listed ${victim} on its leak site ${when}.`];
+
+  if (row.victimSector && row.victimCountry) {
+    sentences.push(`The victim is a ${row.victimSector} organisation in ${row.victimCountry}.`);
+  } else if (row.victimSector) {
+    sentences.push(`The victim operates in ${row.victimSector}.`);
+  } else if (row.victimCountry) {
+    sentences.push(`The victim is based in ${row.victimCountry}.`);
+  }
+
+  if (row.leakSizeBytes) {
+    sentences.push(`The listing claims ${formatSize(row.leakSizeBytes)} of stolen data.`);
+  }
+
+  const status = STATUS_SENTENCE[row.status];
+  if (status) sentences.push(status);
+
+  return sentences.join(" ");
+}
+
+function formatDay(date: Date): string {
+  return date.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function formatSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }

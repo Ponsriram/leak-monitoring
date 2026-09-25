@@ -1,4 +1,4 @@
-import { alertEvents, leaks, sources } from "@leak/db";
+import { leaks, sources } from "@leak/db";
 import { count, gte, isNotNull, sql } from "drizzle-orm";
 import type { FastifyPluginAsyncZod } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -7,12 +7,39 @@ import { requireAuth } from "../plugins/auth.js";
 /**
  * Dashboard aggregates.
  *
- * These replace three things at once: the `/api/leaks-per-day` endpoint that always returned
- * an empty array (it compared a BSON date against a free-text field), and the two static
- * fixture files (`Data.json`, `top.json`) the charts silently fell back to.
- *
  * Everything here aggregates on `first_seen_at`, which is a real `timestamptz` with an index.
  */
+
+/**
+ * Accepts an IANA zone name only ("Asia/Kolkata", "UTC"), never a bare offset.
+ *
+ * `AT TIME ZONE '+05:30'` is accepted by Postgres but its sign convention for offset
+ * literals is the POSIX one — the opposite of what the caller means — so an offset that
+ * parses would silently shift buckets the wrong way by twice the offset. Names carry DST
+ * rules too, which offsets cannot.
+ */
+const IANA_NAME = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/;
+
+function isTimeZone(value: string): boolean {
+  if (!IANA_NAME.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The zone the day boundaries are drawn in. Defaults to UTC so a caller that says nothing
+ * gets the old behaviour; the dashboard sends the browser's zone.
+ */
+const timeZoneParam = z
+  .string()
+  .max(64)
+  .refine(isTimeZone, "must be an IANA time zone name, e.g. Asia/Kolkata")
+  .default("UTC");
+
 export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
   fastify.addHook("preHandler", requireAuth);
 
@@ -20,33 +47,49 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     "/api/stats/leaks-per-day",
     {
       schema: {
-        description: "Leak counts per day over a trailing window. Zero-filled.",
+        description:
+          "Leak counts per day over a trailing window, bucketed in `tz`. Zero-filled.",
         tags: ["stats"],
         querystring: z.object({
           days: z.coerce.number().int().min(1).max(365).default(30),
+          tz: timeZoneParam,
         }),
         response: {
           200: z.object({
             days: z.number(),
+            timeZone: z.string(),
             data: z.array(z.object({ date: z.string(), total: z.number() })),
           }),
         },
       },
     },
     async (request) => {
-      const { days } = request.query;
+      const { days, tz } = request.query;
 
+      /**
+       * Day boundaries are drawn in the caller's zone, not the server's.
+       *
+       * `first_seen_at` is a timestamptz and the database session runs in UTC, so
+       * truncating it directly bucketed by UTC day while every date the UI prints beside
+       * it is formatted in the browser's zone. East of Greenwich that puts the evening's
+       * arrivals on the previous bar and leaves the chart a day behind the leak table —
+       * the same rows, two different dates.
+       *
+       * The join compares the indexed column against an instant range rather than
+       * wrapping it in date_trunc, so `leaks_first_seen_at_idx` is still usable.
+       */
+      // NOTE: with the postgres-js driver `execute()` resolves to a RowList (an array),
+      // not a `{ rows }` wrapper as it does under PGlite. Don't reach for `.rows` here.
       /**
        * generate_series zero-fills days with no leaks. Without it the chart draws a line
        * straight between two distant points and implies activity that never happened.
        */
-      // NOTE: with the postgres-js driver `execute()` resolves to a RowList (an array),
-      // not a `{ rows }` wrapper as it does under PGlite. Don't reach for `.rows` here.
       const rows = await fastify.db.execute<{ date: string; total: number }>(sql`
         with span as (
           select generate_series(
-            date_trunc('day', now()) - make_interval(days => ${days - 1}),
-            date_trunc('day', now()),
+            date_trunc('day', now() at time zone ${tz}::text)
+              - make_interval(days => ${days - 1}),
+            date_trunc('day', now() at time zone ${tz}::text),
             interval '1 day'
           )::date as day
         )
@@ -55,12 +98,14 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
           coalesce(count(l.id), 0)::int as total
         from span
         left join leaks l
-          on date_trunc('day', l.first_seen_at)::date = span.day
+          on l.first_seen_at >= span.day::timestamp at time zone ${tz}::text
+         and l.first_seen_at < (span.day::timestamp + interval '1 day')
+               at time zone ${tz}::text
         group by span.day
         order by span.day
       `);
 
-      return { days, data: [...rows] };
+      return { days, timeZone: tz, data: [...rows] };
     },
   );
 
@@ -131,14 +176,21 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     },
     async (request) => {
       const { tag, limit } = request.query;
-      // `type` is the only one of the three that is NOT NULL, so the isNotNull below is a
-      // no-op for it rather than a filter — the facet returns every distinct value.
-      const column =
-        tag === "country"
-          ? leaks.victimCountry
-          : tag === "sector"
-            ? leaks.victimSector
-            : leaks.leakType;
+
+      // Types are multi-valued, so a row counts once under each type it carries — which is
+      // what the incident-type filter it feeds will return for that value.
+      if (tag === "type") {
+        const rows = await fastify.db.execute<{ value: string; total: number }>(sql`
+          select t as value, count(*)::int as total
+            from ${leaks}, unnest(${leaks.incidentTypes}) as t
+           group by t
+           order by count(*) desc
+           limit ${limit}
+        `);
+        return { tag, data: [...rows] };
+      }
+
+      const column = tag === "country" ? leaks.victimCountry : leaks.victimSector;
 
       const rows = await fastify.db
         .select({ value: column, total: count() })
@@ -167,7 +219,6 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
             leaksLast30Days: z.number(),
             trackedGroups: z.number(),
             activeSources: z.number(),
-            alertsTriggered: z.number(),
             /**
              * When collection last succeeded, and how many sources are currently failing.
              *
@@ -186,7 +237,7 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
     async () => {
       const since = (days: number) => new Date(Date.now() - days * 86_400_000);
 
-      const [total, last7, last30, groups, activeSources, triggered, collection] =
+      const [total, last7, last30, groups, activeSources, collection] =
         await Promise.all([
         fastify.db.select({ value: count() }).from(leaks),
         fastify.db
@@ -204,9 +255,6 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
           .select({ value: count() })
           .from(sources)
           .where(sql`${sources.enabled} = true`),
-        // The old dashboard read this from a collection nothing ever wrote to, so it was
-        // permanently zero. Now it counts real deliveries.
-        fastify.db.select({ value: count() }).from(alertEvents),
         // Most recent successful crawl of any enabled source, plus how many are failing.
         //
         // `execute` runs raw SQL, which bypasses Drizzle's column decoding — the driver is
@@ -232,7 +280,6 @@ export const statsRoutes: FastifyPluginAsyncZod = async (fastify) => {
         leaksLast30Days: last30[0]?.value ?? 0,
         trackedGroups: groups[0]?.value ?? 0,
         activeSources: activeSources[0]?.value ?? 0,
-        alertsTriggered: triggered[0]?.value ?? 0,
         lastCollectionAt,
         failingSources: health?.failing ?? 0,
       };

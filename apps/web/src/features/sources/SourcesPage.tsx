@@ -6,8 +6,7 @@ import { useSources } from "../../lib/queries";
 /**
  * Monitored sources and their crawl health.
  *
- * This page previously rendered ten hardcoded rows with invented values ("last seen 2 hours
- * ago") that never changed. Every column here comes from the database.
+ * Every column here comes from the database.
  */
 export function SourcesPage() {
   const query = useSources();
@@ -15,7 +14,7 @@ export function SourcesPage() {
   const failing = rows.filter((row) => row.health === "failing").length;
 
   return (
-    <div className="page">
+    <div className="page page-fill">
       <div className="page-head">
         <div>
           <h1>Sources</h1>
@@ -26,7 +25,7 @@ export function SourcesPage() {
         </div>
       </div>
 
-      <section className="card">
+      <section className="card table-card">
         {query.isPending ? (
           <TableSkeleton rows={6} cols={6} />
         ) : query.isError ? (

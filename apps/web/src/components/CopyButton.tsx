@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Check, Close, Copy } from "./icons";
 
 /**
  * Copy one value to the clipboard.
@@ -44,9 +45,13 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
       title={message}
       aria-label={state === "idle" ? `${label} ${value}` : message}
     >
-      <span aria-hidden="true">
-        {state === "copied" ? "✓" : state === "failed" ? "✕" : "⧉"}
-      </span>
+      {state === "copied" ? (
+        <Check size={13} />
+      ) : state === "failed" ? (
+        <Close size={13} />
+      ) : (
+        <Copy size={13} />
+      )}
       {/* Announced on change; the glyph swap alone reaches nobody using a screen reader. */}
       <span className="sr-only" role="status" aria-live="polite">
         {state === "idle" ? "" : message}

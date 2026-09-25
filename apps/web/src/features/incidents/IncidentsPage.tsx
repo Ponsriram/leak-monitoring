@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ChevronLeft, ChevronRight, Filter, MapIcon } from "../../components/icons";
 import { formatNumber } from "../../lib/format";
 import {
   useIncidents,
@@ -31,25 +32,26 @@ type SectionConfig = {
    * would restate the row it was opened from.
    */
   expandable: boolean;
-  /** Whether the incident-type badge and its filter are shown. */
+  /** Whether the incident-type filter is shown. */
   typed?: boolean;
 };
 
 const SECTIONS: Record<IncidentSection, SectionConfig> = {
   general: {
     title: "World Incidents · General",
-    subtitle: "Every incident collected across all monitored sources",
-    // Type sits directly after the date, beside listing status: the two together are what
-    // classify a row, and separating them puts the victim between two halves of one answer.
+    subtitle: "Real-time cybersecurity threat intelligence across all monitored sources",
+    // The reference console's order: when, what kind, what happened, who did it, what they
+    // hit and who it belonged to. Listing status trails, as supporting detail for the type.
     columns: [
       "timestamp",
       "type",
-      "status",
-      "victim",
+      "summary",
       "actor",
       "technologies",
+      "victim",
       "country",
       "sector",
+      "status",
     ],
     emptyTitle: "No incidents collected yet",
     expandable: true,
@@ -61,10 +63,12 @@ const SECTIONS: Record<IncidentSection, SectionConfig> = {
       "Automatically collected ransomware leak-site activity — newly listed victims, updated continuously",
     columns: [
       "timestamp",
+      "type",
+      "summary",
       "actor",
       "victim",
-      "country",
       "domain",
+      "country",
       "technologies",
       "siteStatus",
       "whois",
@@ -72,14 +76,17 @@ const SECTIONS: Record<IncidentSection, SectionConfig> = {
     ],
     emptyTitle: "No ransomware listings collected yet",
     expandable: true,
+    // Every row here is a ransomware incident, but a type filter is still meaningful now that
+    // rows carry several — "which ransomware listings have been published or sold?".
+    typed: true,
   },
   darkweb: {
     title: "World Incidents · Dark Web",
-    subtitle:
-      "Exposed victim sites, enriched with web-technology and WHOIS data",
+    subtitle: "Exposed victim sites, enriched with web-technology and WHOIS data",
     columns: [
       "timestamp",
       "domain",
+      "summary",
       "technologies",
       "siteStatus",
       "country",
@@ -137,7 +144,7 @@ export function IncidentsPage({ section }: { section: IncidentSection }) {
   }
 
   return (
-    <div className="page">
+    <div className="page page-fill">
       <div className="page-head">
         <div>
           <h1>{config.title}</h1>
@@ -148,11 +155,16 @@ export function IncidentsPage({ section }: { section: IncidentSection }) {
           className="btn btn-primary"
           onClick={() => navigate("/dashboard/map")}
         >
+          <MapIcon size={15} />
           Live Map
         </button>
       </div>
 
       <div className="filter-bar">
+        <span className="filter-lead">
+          <Filter size={15} />
+          Search
+        </span>
         <input
           type="search"
           className="filter-input"
@@ -190,9 +202,7 @@ export function IncidentsPage({ section }: { section: IncidentSection }) {
           ))}
         </select>
 
-        {/* Same rule as the site-status filter below: only where the column is shown. On
-            Ransomware the section already pins leak_type, so the dropdown would offer one
-            option that changes nothing. */}
+        {/* Same rule as the site-status filter below: only where the column is shown. */}
         {config.typed && (
           <select
             className="filter-select"
@@ -252,7 +262,7 @@ export function IncidentsPage({ section }: { section: IncidentSection }) {
         )}
       </div>
 
-      <section className="card">
+      <section className="card table-card">
         <div className="card-body no-pad">
           <IncidentTable
             rows={rows}
@@ -327,7 +337,7 @@ function Pager({
         disabled={page <= 1}
         aria-label="Previous page"
       >
-        ‹
+        <ChevronLeft size={15} />
       </button>
       {pages.map((entry, index) =>
         entry === "gap" ? (
@@ -353,7 +363,7 @@ function Pager({
         disabled={page >= totalPages}
         aria-label="Next page"
       >
-        ›
+        <ChevronRight size={15} />
       </button>
     </nav>
   );

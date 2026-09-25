@@ -1,5 +1,6 @@
 import { ExternalLink } from "../../components/ExternalLink";
 import { useEffect, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "../../components/icons";
 import { LeakStatusChip } from "../../components/StatusChip";
 import { TagChip } from "../../components/TagChip";
 import { EmptyState, ErrorState, TableSkeleton } from "../../components/states";
@@ -15,12 +16,24 @@ import { SyncButton } from "./SyncButton";
 
 const PAGE_SIZE = 25;
 
+/** The header's sort indicator. Decorative: `aria-sort` on the header carries the state. */
+function SortMark({ active, order }: { active: boolean; order: "asc" | "desc" }) {
+  return (
+    <span className="th-sort-arrow" style={active ? { opacity: 1, color: "var(--accent)" } : undefined}>
+      {active ? (
+        order === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+      ) : (
+        <ChevronsUpDown size={13} />
+      )}
+    </span>
+  );
+}
+
 /**
  * The leaks table.
  *
- * Everything — search, filtering, sorting, paging — happens in Postgres. The old page
- * fetched the entire collection on mount and then filtered it in JavaScript, so the browser
- * held every leak in memory and the "search" scanned all of them on each keystroke.
+ * Everything — search, filtering, sorting, paging — happens in Postgres. The browser only
+ * ever holds the page it is showing.
  */
 export function LeaksPage() {
   const [search, setSearch] = useState("");
@@ -74,7 +87,7 @@ export function LeaksPage() {
   const hasFilters = Boolean(search || group || status || country || sector);
 
   return (
-    <div className="page">
+    <div className="page page-fill">
       <div className="page-head">
         <div>
           <h1>Leaks</h1>
@@ -94,7 +107,7 @@ export function LeaksPage() {
 
       <LatestArrivals />
 
-      <section className="card">
+      <section className="card table-card">
         <div className="card-head">
           <div className="controls">
             <input
@@ -225,7 +238,7 @@ export function LeaksPage() {
                           : "none"
                       }
                     >
-                      Victim {sort === "victim_name" && (order === "asc" ? "▲" : "▼")}
+                      Victim <SortMark active={sort === "victim_name"} order={order} />
                     </th>
                     <th>Group</th>
                     {/*
@@ -248,7 +261,7 @@ export function LeaksPage() {
                           : "none"
                       }
                     >
-                      Published {sort === "published_at" && (order === "asc" ? "▲" : "▼")}
+                      Published <SortMark active={sort === "published_at"} order={order} />
                     </th>
                     <th
                       className="sortable"
@@ -261,7 +274,7 @@ export function LeaksPage() {
                           : "none"
                       }
                     >
-                      First seen {sort === "first_seen_at" && (order === "asc" ? "▲" : "▼")}
+                      First seen <SortMark active={sort === "first_seen_at"} order={order} />
                     </th>
                     {/*
                       The column that answers "is this listing still up?". `status` cannot:

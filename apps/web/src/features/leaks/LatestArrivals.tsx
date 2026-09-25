@@ -1,7 +1,8 @@
+import { useState } from "react";
+import { ChevronDown } from "../../components/icons";
 import { formatBytes, formatRelative } from "../../lib/format";
 import { useCrawlStatus, useLeaks, type Leak } from "../../lib/queries";
 import { LeakStatusChip } from "../../components/StatusChip";
-import { TagChip } from "../../components/TagChip";
 
 /**
  * The newest listings, by when we first saw them.
@@ -16,9 +17,24 @@ import { TagChip } from "../../components/TagChip";
  * A card is marked new when it arrived during the most recent completed sync — derived from
  * that sync's own start time rather than a wall-clock window, so "new" means "this sync
  * found it" and not "less than a day old".
+ *
+ * One row of compact cards that scrolls sideways, never a wrapping grid: this sits above the
+ * leaks table on a page whose table takes the remaining height, and a strip that wraps to a
+ * second row takes that height straight out of the table. It also collapses to its header,
+ * and remembers that, for anyone who would rather give the table everything.
  */
 
-const CARD_COUNT = 6;
+const CARD_COUNT = 8;
+const COLLAPSED_KEY = "lm.arrivals.collapsed";
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === "1";
+  } catch {
+    // Site data blocked — the strip simply starts open.
+    return false;
+  }
+}
 
 export function LatestArrivals() {
   const query = useLeaks({
@@ -28,6 +44,19 @@ export function LatestArrivals() {
     order: "desc",
   });
   const status = useCrawlStatus();
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+
+  function toggle() {
+    setCollapsed((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // A preference that cannot be persisted still applies for this visit.
+      }
+      return next;
+    });
+  }
 
   const rows = query.data?.data ?? [];
   if (query.isPending || rows.length === 0) return null;
@@ -41,17 +70,23 @@ export function LatestArrivals() {
       : null;
 
   return (
-    <section className="card arrivals-card">
-      <div className="card-head">
-        <div>
-          <h2>Latest arrivals</h2>
-          <p className="page-sub">
-            The most recent listings by first sighting, newest first.
-          </p>
-        </div>
+    <section className={`card arrivals-card${collapsed ? " is-collapsed" : ""}`}>
+      <div className="arrivals-head">
+        <h2>Latest arrivals</h2>
+        <span className="arrivals-sub">Newest listings by first sighting</span>
+        <button
+          type="button"
+          className="btn btn-sm arrivals-toggle"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          aria-controls="latest-arrivals"
+        >
+          <ChevronDown size={14} className={collapsed ? "nav-chevron closed" : "nav-chevron"} />
+          {collapsed ? "Show" : "Hide"}
+        </button>
       </div>
 
-      <div className="arrivals">
+      <div className="arrivals" id="latest-arrivals" hidden={collapsed}>
         {rows.map((leak) => (
           <ArrivalCard
             key={leak.id}
@@ -80,23 +115,25 @@ function ArrivalCard({ leak, isNew }: { leak: Leak; isNew: boolean }) {
         <span className="arrival-mark" aria-hidden="true">
           {title.slice(0, 2).toUpperCase()}
         </span>
+        <div className="arrival-ident">
+          <div className="arrival-name" title={title}>
+            {title}
+          </div>
+          <div className="arrival-group mono">{leak.actorGroup}</div>
+        </div>
         {isNew && <span className="arrival-new">new</span>}
       </div>
 
-      <div className="arrival-name" title={title}>
-        {title}
-      </div>
-      <div className="arrival-group mono">{leak.actorGroup}</div>
-
-      <div className="arrival-tags">
-        <LeakStatusChip status={leak.status} />
-        {leak.victimCountry && <TagChip kind="country" value={leak.victimCountry} />}
-        {leak.victimSector && <TagChip kind="sector" value={leak.victimSector} />}
-      </div>
-
       <div className="arrival-foot">
-        <span>{formatRelative(leak.firstSeenAt)}</span>
-        {leak.leakSizeBytes != null && <span>{formatBytes(leak.leakSizeBytes)}</span>}
+        {/* Status only: a compact card has room for one chip, and a clipped "Ger" is worse
+            than none — country and sector are in the table directly below. */}
+        <div className="arrival-tags">
+          <LeakStatusChip status={leak.status} />
+        </div>
+        <span className="arrival-when">
+          {formatRelative(leak.firstSeenAt)}
+          {leak.leakSizeBytes != null && ` · ${formatBytes(leak.leakSizeBytes)}`}
+        </span>
       </div>
     </article>
   );

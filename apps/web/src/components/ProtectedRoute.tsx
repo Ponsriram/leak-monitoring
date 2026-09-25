@@ -6,9 +6,8 @@ import { Loading } from "./states";
 /**
  * Gate for everything behind sign-in.
  *
- * The old app's "login" was a call to `navigateTo('/dashboard')` — no token, nothing stored,
- * no route guard — so typing /dashboard in the address bar skipped the login screen entirely.
- * The API enforces this independently; this is the UX half.
+ * Typing /dashboard into the address bar without a session lands on the sign-in screen. The
+ * API enforces the same thing independently; this is the UX half.
  */
 export function ProtectedRoute({ children }: { children: ReactNode }) {
   const { data: session, isPending } = useSession();

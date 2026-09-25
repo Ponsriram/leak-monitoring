@@ -5,13 +5,13 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom"
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { ApiError } from "./lib/api";
-import { AlertsPage } from "./features/alerts/AlertsPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { LeaksPage } from "./features/leaks/LeaksPage";
 import { IncidentsPage } from "./features/incidents/IncidentsPage";
 import { IocPage } from "./features/iocs/IocPage";
 import { LiveMapPage } from "./features/map/LiveMapPage";
+import { MobileNumbersPage } from "./features/mobile/MobileNumbersPage";
 import { SearchPage } from "./features/search/SearchPage";
 import { SourcesPage } from "./features/sources/SourcesPage";
 import "./styles/app.css";
@@ -53,9 +53,9 @@ const router = createBrowserRouter([
       { path: "ransomware", element: <IncidentsPage section="ransomware" /> },
       { path: "darkweb", element: <IncidentsPage section="darkweb" /> },
       { path: "iocs", element: <IocPage /> },
+      { path: "mobile", element: <MobileNumbersPage /> },
       { path: "map", element: <LiveMapPage /> },
       { path: "sources", element: <SourcesPage /> },
-      { path: "alerts", element: <AlertsPage /> },
     ],
   },
   { path: "/", element: <Navigate to="/dashboard" replace /> },

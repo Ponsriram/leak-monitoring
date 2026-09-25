@@ -3,9 +3,11 @@ import { CopyButton } from "../../components/CopyButton";
 import { ExternalLink } from "../../components/ExternalLink";
 import { LeakStatusChip } from "../../components/StatusChip";
 import { TagChip } from "../../components/TagChip";
+import { ArrowDown, ArrowUp, Calendar, ChevronRight, ChevronsUpDown } from "../../components/icons";
 import { EmptyState, ErrorState } from "../../components/states";
 import { formatBytes, formatDateTime, formatRelative } from "../../lib/format";
 import type { IncidentRow, IncidentSort, SiteStatus } from "../../lib/incidents";
+import { SummaryCell } from "./SummaryDialog";
 
 /**
  * The table every section renders.
@@ -28,6 +30,7 @@ import type { IncidentRow, IncidentSort, SiteStatus } from "../../lib/incidents"
 export type ColumnKey =
   | "timestamp"
   | "type"
+  | "summary"
   | "actor"
   | "victim"
   | "domain"
@@ -41,14 +44,15 @@ export type ColumnKey =
   | "source";
 
 const COLUMN_LABEL: Record<ColumnKey, string> = {
-  timestamp: "First seen",
+  timestamp: "Timestamp",
   type: "Incident type",
+  summary: "Summary",
   actor: "Threat actor",
   victim: "Victim",
   domain: "Victim domain",
   country: "Victim country",
   sector: "Activity",
-  technologies: "Web technologies",
+  technologies: "Target technology",
   siteStatus: "Site status",
   whois: "WHOIS email",
   status: "Listing status",
@@ -178,8 +182,12 @@ function HeaderCell({
     >
       <button type="button" className="th-sort" onClick={() => onSort(sortKey)}>
         {COLUMN_LABEL[column]}
-        <span className="th-sort-arrow" aria-hidden="true">
-          {active ? (order === "asc" ? "▲" : "▼") : "↕"}
+        <span className="th-sort-arrow">
+          {active ? (
+            order === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />
+          ) : (
+            <ChevronsUpDown size={13} />
+          )}
         </span>
       </button>
     </th>
@@ -211,13 +219,13 @@ function IncidentRowView({
               aria-expanded={expanded}
               aria-label={expanded ? "Collapse row" : "Expand row"}
             >
-              {expanded ? "▾" : "▸"}
+              <ChevronRight size={15} />
             </button>
           </td>
         )}
         {columns.map((column) => (
           <td key={column} className={`cell-${column}`}>
-            <Cell column={column} row={row} />
+            <Cell column={column} row={row} columns={columns} />
           </td>
         ))}
       </tr>
@@ -235,17 +243,63 @@ function IncidentRowView({
 /**
  * How an incident was classified.
  *
- * The column carries a database default, but a row can still arrive with it empty, and
- * "Unclassified" says that honestly where a silent fallback to "Ransomware" would assert
- * something we never derived.
+ * Mirrors `INCIDENT_TYPES` in services/intel/intel/extract/describe.py, in the same order —
+ * the order is what keeps the stacked chips lined up row to row. A row can still arrive with
+ * a type missing from this list, and "Unclassified" is reserved for a row with none at all:
+ * a silent fallback to "Ransomware" would assert something we never derived.
  */
 const TYPE_LABEL: Record<string, string> = {
   ransomware: "Ransomware",
+  data_breach: "Data Breach",
   data_leak: "Data Leak",
+  hacked: "Hacked",
+  sale: "Sale",
+  extortion: "Extortion",
+  credential_leak: "Credential Leak",
+  social_engineering: "Social Engineering",
+  ddos: "DDoS",
+  defacement: "Defacement",
+  dark_web: "Dark Web",
   credential_dump: "Credential Dump",
   darkweb_mention: "Darkweb Mention",
-  defacement: "Defacement",
 };
+
+const TYPE_ORDER = Object.keys(TYPE_LABEL);
+
+/** Hover text for each type, saying what evidence puts a row in it. */
+const TYPE_HELP: Record<string, string> = {
+  ransomware: "Listed on a ransomware group's leak site.",
+  data_breach: "The listing states a size of stolen data, or its text describes theft.",
+  data_leak: "The data has been published, or the listing says it was leaked or dumped.",
+  hacked: "The listing describes an intrusion or access to the victim's systems.",
+  sale: "The listing says the data was sold or is for sale.",
+  extortion: "A countdown, deadline, or negotiation is under way.",
+  credential_leak: "The listing mentions credentials or passwords.",
+  social_engineering: "The listing describes phishing or impersonation.",
+  ddos: "The listing describes a denial-of-service attack.",
+  defacement: "The listing describes a website defacement.",
+  dark_web: "The listing refers to dark-web distribution.",
+};
+
+function orderTypes(types: string[]): string[] {
+  const rank = (type: string) => {
+    const index = TYPE_ORDER.indexOf(normalizeType(type));
+    return index === -1 ? TYPE_ORDER.length : index;
+  };
+  return [...new Set(types)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+/** Every type a row carries, stacked in canonical order. */
+export function IncidentTypeStack({ types }: { types: string[] }) {
+  if (types.length === 0) return <IncidentTypeChip value={null} />;
+  return (
+    <div className="type-stack">
+      {orderTypes(types).map((type) => (
+        <IncidentTypeChip key={type} value={type} />
+      ))}
+    </div>
+  );
+}
 
 /**
  * The display name for a stored type, for use outside a chip — the filter dropdown.
@@ -272,7 +326,11 @@ export function IncidentTypeChip({ value }: { value: string | null | undefined }
       </span>
     );
   }
-  return <span className={`chip chip-type type-${key}`}>{incidentTypeLabel(key)}</span>;
+  return (
+    <span className={`chip chip-type type-${key}`} title={TYPE_HELP[key]}>
+      {incidentTypeLabel(key)}
+    </span>
+  );
 }
 
 function normalizeType(value: string | null | undefined): string {
@@ -287,13 +345,24 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
-function Cell({ column, row }: { column: ColumnKey; row: IncidentRow }) {
+function Cell({
+  column,
+  row,
+  columns,
+}: {
+  column: ColumnKey;
+  row: IncidentRow;
+  columns: ColumnKey[];
+}) {
   switch (column) {
     case "timestamp":
       return <TimestampCell value={row.firstSeenAt} />;
 
     case "type":
-      return <IncidentTypeChip value={row.leakType} />;
+      return <IncidentTypeStack types={row.incidentTypes} />;
+
+    case "summary":
+      return <SummaryCell row={row} />;
 
     case "actor":
       return <span className="chip chip-actor">{row.actorGroup}</span>;
@@ -305,14 +374,20 @@ function Cell({ column, row }: { column: ColumnKey; row: IncidentRow }) {
             Plenty of listings name no company, and this column then falls back to the
             domain — which is the same value the Victim domain column links, so it gets the
             same treatment here rather than rendering as bare text in one column and a link
-            in the other.
+            in the other. Where there is a name, the domain sits under it, linked.
           */}
           {row.victimName ? (
-            <span className="victim-name">{row.victimName}</span>
+            <span className="chip chip-victim">{row.victimName}</span>
           ) : row.victimDomain ? (
             <ExternalLink value={row.victimDomain} className="mono" />
           ) : (
             <span className="muted">—</span>
+          )}
+          {/* Only where the table has no domain column of its own to show it in. */}
+          {row.victimName && row.victimDomain && !columns.includes("domain") && (
+            <div className="victim-domain">
+              <ExternalLink value={row.victimDomain} className="mono" />
+            </div>
           )}
           {row.pageTitle && row.pageTitle !== row.victimName && (
             <div className="muted small">{row.pageTitle}</div>
@@ -394,11 +469,20 @@ function TimestampCell({ value }: { value: string | null | undefined }) {
   if (!parsed) return <span className="muted nowrap">Unknown</span>;
 
   return (
-    <div className="stamp">
-      <span className="stamp-abs mono nowrap">{formatDateTime(parsed)}</span>
+    <div className="stamp" title={formatDateTime(parsed)}>
+      <span className="stamp-date nowrap">
+        <Calendar size={14} />
+        {isoDay(parsed)}
+      </span>
       <span className="stamp-rel muted small nowrap">{formatRelative(parsed)}</span>
     </div>
   );
+}
+
+/** YYYY-MM-DD in local time — the column scans as dates, the full stamp is on hover. */
+function isoDay(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function toDate(value: string | Date | null | undefined): Date | null {
@@ -416,10 +500,9 @@ function statusHelp(row: IncidentRow): string {
 /**
  * Technology chips — every one of them.
  *
- * These used to cap at four with a "+N" chip carrying the rest. The count was the problem:
- * "+16" is not something an analyst can act on, and the cell it was protecting is the one
- * that answers "what is this victim running", which is the question the column exists for.
- * The container wraps instead, so a WordPress site is a tall row rather than a truncated one.
+ * Uncapped: a "+16" chip is not something an analyst can act on, and this cell answers "what
+ * is this victim running", which is the question the column exists for. The container wraps
+ * instead, so a WordPress site is a tall row rather than a truncated one.
  */
 function TechnologyCell({ row }: { row: IncidentRow }) {
   const technologies = row.technologies ?? [];
@@ -470,10 +553,24 @@ function RowDetail({ row }: { row: IncidentRow }) {
 
   return (
     <div className="detail-grid">
+      <section className="detail-block detail-summary">
+        <h4>{row.summarySource === "listing" ? "Summary · from the listing" : "Summary · composed from fields"}</h4>
+        <p>{row.summary}</p>
+      </section>
+
       <DetailBlock label="Listing">
         <DetailLine label="Actor" value={row.actorGroup} />
-        <DetailLine label="Type" value={<IncidentTypeChip value={row.leakType} />} />
-        <DetailLine label="Status" value={row.status} />
+        <DetailLine
+          label="Types"
+          value={
+            <div className="chips">
+              {orderTypes(row.incidentTypes).map((type) => (
+                <IncidentTypeChip key={type} value={type} />
+              ))}
+            </div>
+          }
+        />
+        <DetailLine label="Status" value={<LeakStatusChip status={row.status} />} />
         <DetailLine label="Size" value={formatBytes(row.leakSizeBytes)} />
       </DetailBlock>
 

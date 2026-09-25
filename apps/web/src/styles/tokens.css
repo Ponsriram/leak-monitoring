@@ -1,36 +1,46 @@
 /**
  * Design tokens. One styling approach for the whole app — plain CSS with custom properties.
  *
- * The old client shipped a .css AND a .scss for every component while `sass` wasn't even a
- * dependency, so twelve SCSS files were dead weight drifting from what actually rendered.
- * There is exactly one stylesheet system here.
- *
  * Light is the base; dark is redefined at token level under both the OS media query and the
  * explicit [data-theme] stamp, so a toggle wins in either direction.
+ *
+ * Palette: a blue accent on cool slate neutrals, with a deep navy sidebar so the navigation
+ * reads as the console's frame and the work area stays light. All three ink levels clear
+ * 4.5:1 on the surface, so table headers and secondary text stay readable.
  */
 
 :root {
   color-scheme: light;
 
-  /* surfaces — neutrals carry a slight cool bias toward the accent, not flat grey */
-  --bg: #f1f4f5;
+  /* surfaces */
+  --bg: #f3f5f9;
   --surface: #ffffff;
-  --surface-2: #e7ecee;
-  --surface-hover: #edf1f2;
+  --surface-2: #f1f4f9;
+  --surface-hover: #f6f9ff;
 
-  /* ink */
-  --text: #10171a;
-  --text-2: #45575c;
-  --muted: #6a7e84;
+  /* ink — all three clear 4.5:1 on --surface */
+  --text: #0f172a;
+  --text-2: #334155;
+  --muted: #5b6b82;
 
-  --border: #d5dfe1;
-  --border-2: #bccacd;
+  --border: #e2e8f0;
+  --border-2: #cbd5e1;
 
   /* accent */
-  --accent: #0b6e78;
-  --accent-hover: #095a63;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
   --accent-ink: #ffffff;
-  --accent-wash: #dcebec;
+  --accent-wash: #eaf1ff;
+  --accent-ring: rgba(37, 99, 235, 0.22);
+
+  /* sidebar — fixed navy in both themes; it is the console's frame, not a surface */
+  --side-bg: linear-gradient(180deg, #0f2847 0%, #0b1d36 100%);
+  --side-text: #c9d6e8;
+  --side-muted: #8aa0bd;
+  --side-hover: rgba(255, 255, 255, 0.07);
+  --side-active: rgba(96, 165, 250, 0.18);
+  --side-active-text: #ffffff;
+  --side-border: rgba(255, 255, 255, 0.08);
 
   /* chart series — validated against the surface below (see dataviz palette) */
   --series-1: #2a78d6;
@@ -43,71 +53,115 @@
   --status-serious: #ec835a;
   --status-critical: #d03b3b;
 
-  --grid: rgba(16, 23, 26, 0.08);
+  /* chip inks, darkened for text use: the status colours above are tuned for dots and
+     fills, and as 11px text on a tint several of them fall under 4.5:1 */
+  --ink-red: #b42318;
+  --ink-orange: #b54708;
+  --ink-amber: #93600a;
+  --ink-green: #067647;
+  --ink-blue: #1d4ed8;
+  --ink-violet: #6d28d9;
+  --ink-purple: #7e22ce;
+  --ink-teal: #0f766e;
+  --ink-pink: #be185d;
+  --ink-slate: #475569;
 
-  --radius: 8px;
-  --radius-sm: 5px;
-  --shadow: 0 1px 2px rgba(16, 23, 26, 0.05), 0 8px 24px -14px rgba(16, 23, 26, 0.2);
+  --grid: rgba(15, 23, 42, 0.07);
 
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px -12px rgba(15, 23, 42, 0.16);
+  --shadow-lg: 0 24px 60px -20px rgba(15, 23, 42, 0.35);
+
+  --sans: "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, BlinkMacSystemFont,
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
 
-    --bg: #0d1214;
-    --surface: #171a1d;
-    --surface-2: #1e2529;
-    --surface-hover: #222a2e;
+    --bg: #0b1220;
+    --surface: #111a2b;
+    --surface-2: #17233a;
+    --surface-hover: #1a2844;
 
-    --text: #e3ebec;
-    --text-2: #adbfc2;
-    --muted: #7c9095;
+    --text: #e8eef8;
+    --text-2: #b8c5d9;
+    --muted: #8b9cb5;
 
-    --border: #263236;
-    --border-2: #33454a;
+    --border: #22314b;
+    --border-2: #31456a;
 
-    --accent: #4fc6ce;
-    --accent-hover: #7fdde3;
-    --accent-ink: #06282b;
-    --accent-wash: #10292c;
+    --accent: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-ink: #0a1630;
+    --accent-wash: #132a4d;
+    --accent-ring: rgba(96, 165, 250, 0.3);
+
+    --side-bg: linear-gradient(180deg, #0a1730 0%, #070f20 100%);
 
     --series-1: #3987e5;
     --series-1-fill: rgba(57, 135, 229, 0.18);
 
-    --grid: rgba(227, 235, 236, 0.09);
+    --ink-red: #fca5a5;
+    --ink-orange: #fdba74;
+    --ink-amber: #fcd34d;
+    --ink-green: #6ee7b7;
+    --ink-blue: #93c5fd;
+    --ink-violet: #c4b5fd;
+    --ink-purple: #d8b4fe;
+    --ink-teal: #5eead4;
+    --ink-pink: #f9a8d4;
+    --ink-slate: #cbd5e1;
+
+    --grid: rgba(232, 238, 248, 0.08);
 
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px -16px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #0d1214;
-  --surface: #171a1d;
-  --surface-2: #1e2529;
-  --surface-hover: #222a2e;
+  --bg: #0b1220;
+  --surface: #111a2b;
+  --surface-2: #17233a;
+  --surface-hover: #1a2844;
 
-  --text: #e3ebec;
-  --text-2: #adbfc2;
-  --muted: #7c9095;
+  --text: #e8eef8;
+  --text-2: #b8c5d9;
+  --muted: #8b9cb5;
 
-  --border: #263236;
-  --border-2: #33454a;
+  --border: #22314b;
+  --border-2: #31456a;
 
-  --accent: #4fc6ce;
-  --accent-hover: #7fdde3;
-  --accent-ink: #06282b;
-  --accent-wash: #10292c;
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-ink: #0a1630;
+  --accent-wash: #132a4d;
+  --accent-ring: rgba(96, 165, 250, 0.3);
+
+  --side-bg: linear-gradient(180deg, #0a1730 0%, #070f20 100%);
 
   --series-1: #3987e5;
   --series-1-fill: rgba(57, 135, 229, 0.18);
 
-  --grid: rgba(227, 235, 236, 0.09);
+  --ink-red: #fca5a5;
+  --ink-orange: #fdba74;
+  --ink-amber: #fcd34d;
+  --ink-green: #6ee7b7;
+  --ink-blue: #93c5fd;
+  --ink-violet: #c4b5fd;
+  --ink-purple: #d8b4fe;
+  --ink-teal: #5eead4;
+  --ink-pink: #f9a8d4;
+  --ink-slate: #cbd5e1;
+
+  --grid: rgba(232, 238, 248, 0.08);
 
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px -16px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 24px 60px -16px rgba(0, 0, 0, 0.75);
 }

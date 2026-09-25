@@ -1,4 +1,5 @@
 import { ExternalLink } from "../../components/ExternalLink";
+import { Search as SearchIcon } from "../../components/icons";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { EmptyState, ErrorState } from "../../components/states";
@@ -96,9 +97,7 @@ export function SearchPage() {
       </div>
 
       <div className="search-bar">
-        <span className="search-icon" aria-hidden="true">
-          ⌕
-        </span>
+        <SearchIcon size={18} className="search-icon" />
         <input
           ref={inputRef}
           type="search"

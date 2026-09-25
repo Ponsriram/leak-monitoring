@@ -1,4 +1,5 @@
 import { CopyButton } from "../../components/CopyButton";
+import { ChevronLeft, ChevronRight } from "../../components/icons";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { EmptyState, ErrorState } from "../../components/states";
@@ -96,7 +97,7 @@ export function IocPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page page-fill">
       <div className="page-head">
         <div>
           <h1>Bulk Intelligence · Indicators of Compromise</h1>
@@ -169,7 +170,7 @@ export function IocPage() {
         )}
       </div>
 
-      <section className="card">
+      <section className="card table-card">
         <div className="card-body no-pad">
           {query.isError ? (
             <ErrorState error={query.error} onRetry={query.refetch} />
@@ -215,8 +216,9 @@ export function IocPage() {
                 onClick={() =>
                   setFilters((current) => ({ ...current, page: current.page - 1 }))
                 }
+                aria-label="Previous page"
               >
-                ‹
+                <ChevronLeft size={15} />
               </button>
               <span className="muted">
                 {pagination.page} / {formatNumber(pagination.totalPages)}
@@ -228,8 +230,9 @@ export function IocPage() {
                 onClick={() =>
                   setFilters((current) => ({ ...current, page: current.page + 1 }))
                 }
+                aria-label="Next page"
               >
-                ›
+                <ChevronRight size={15} />
               </button>
             </div>
           </div>
@@ -314,9 +317,8 @@ function IocRowView({ row }: { row: IocRow }) {
       </td>
 
       {/*
-        Every contact and every address. This used to show the first two roles and the first
-        address of each, with no "+N" saying so — a cell that quietly drops an abuse address
-        is worse than one that admits it is truncating.
+        Every contact and every address — a cell that quietly drops an abuse address is worse
+        than a tall one.
       */}
       <td>
         {contacts.length === 0 ? (

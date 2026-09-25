@@ -5,8 +5,7 @@ import { apiFetch, qs } from "./api";
  * One hook per endpoint, typed to match the API's response schemas.
  *
  * Live-data note: this is a monitoring console, so the dashboard queries carry a
- * `refetchInterval`. The old app fetched once on mount and then showed stale numbers
- * indefinitely.
+ * `refetchInterval` rather than fetching once on mount.
  */
 
 // --- types (mirror the API's zod response schemas) ---
@@ -92,39 +91,12 @@ export type SourceRow = {
   health: "healthy" | "degraded" | "failing" | "disabled";
 };
 
-export type Alert = {
-  id: number;
-  name: string;
-  matchKind: "exact" | "domain" | "substring" | "actor_group";
-  matchValue: string;
-  channel: "email" | "webhook";
-  target: string;
-  enabled: boolean;
-  createdAt: string;
-  triggerCount: number;
-};
-
-export type AlertEvent = {
-  id: number;
-  alertId: number;
-  alertName: string;
-  leakId: number;
-  victimName: string | null;
-  actorGroup: string;
-  matchedOn: string;
-  channel: "email" | "webhook";
-  status: "pending" | "sent" | "failed";
-  sentAt: string | null;
-  createdAt: string;
-};
-
 export type Summary = {
   totalLeaks: number;
   leaksLast7Days: number;
   leaksLast30Days: number;
   trackedGroups: number;
   activeSources: number;
-  alertsTriggered: number;
   lastCollectionAt: string | null;
   failingSources: number;
 };
@@ -210,12 +182,10 @@ export const keys = {
   leak: (id: number) => ["leak", id] as const,
   sources: () => ["sources"] as const,
   summary: () => ["stats", "summary"] as const,
-  perDay: (days: number) => ["stats", "per-day", days] as const,
+  perDay: (days: number, tz: string) => ["stats", "per-day", days, tz] as const,
   perGroup: (limit: number) => ["stats", "per-group", limit] as const,
   perTag: (tag: TagKind) => ["stats", "per-tag", tag] as const,
   crawlStatus: () => ["crawl", "status"] as const,
-  alerts: () => ["alerts"] as const,
-  alertEvents: () => ["alert-events"] as const,
   search: (q: string, limit: number) => ["search", q, limit] as const,
   hunt: (id: number) => ["hunt", id] as const,
 };
@@ -246,12 +216,24 @@ export function useSummary() {
   });
 }
 
+/**
+ * The zone the daily buckets are cut in.
+ *
+ * Sent to the server because the counting happens there: without it the API buckets by UTC
+ * day while every timestamp rendered next to the chart is formatted in the browser's zone,
+ * so a leak that arrived at 00:40 local lands on yesterday's bar.
+ */
+function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
 export function useLeaksPerDay(days = 30) {
+  const tz = browserTimeZone();
   return useQuery({
-    queryKey: keys.perDay(days),
+    queryKey: keys.perDay(days, tz),
     queryFn: () =>
-      apiFetch<{ days: number; data: { date: string; total: number }[] }>(
-        `/api/stats/leaks-per-day${qs({ days })}`,
+      apiFetch<{ days: number; timeZone: string; data: { date: string; total: number }[] }>(
+        `/api/stats/leaks-per-day${qs({ days, tz })}`,
       ),
     refetchInterval: LIVE_REFETCH,
   });
@@ -329,60 +311,6 @@ export function useSources() {
     queryKey: keys.sources(),
     queryFn: () => apiFetch<{ data: SourceRow[] }>("/api/sources"),
     refetchInterval: LIVE_REFETCH,
-  });
-}
-
-// --- alerts ---
-
-export function useAlerts() {
-  return useQuery({
-    queryKey: keys.alerts(),
-    queryFn: () => apiFetch<{ data: Alert[] }>("/api/alerts"),
-  });
-}
-
-export function useAlertEvents() {
-  return useQuery({
-    queryKey: keys.alertEvents(),
-    queryFn: () => apiFetch<{ total: number; data: AlertEvent[] }>("/api/alerts/events"),
-    refetchInterval: LIVE_REFETCH,
-  });
-}
-
-export type NewAlertInput = {
-  name: string;
-  matchKind: Alert["matchKind"];
-  matchValue: string;
-  channel: Alert["channel"];
-  target: string;
-};
-
-export function useCreateAlert() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (input: NewAlertInput) =>
-      apiFetch<Alert>("/api/alerts", { method: "POST", body: JSON.stringify(input) }),
-    onSuccess: () => client.invalidateQueries({ queryKey: keys.alerts() }),
-  });
-}
-
-export function useToggleAlert() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
-      apiFetch<Alert>(`/api/alerts/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ enabled }),
-      }),
-    onSuccess: () => client.invalidateQueries({ queryKey: keys.alerts() }),
-  });
-}
-
-export function useDeleteAlert() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => apiFetch<void>(`/api/alerts/${id}`, { method: "DELETE" }),
-    onSuccess: () => client.invalidateQueries({ queryKey: keys.alerts() }),
   });
 }
 

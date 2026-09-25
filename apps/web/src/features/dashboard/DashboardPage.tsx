@@ -1,9 +1,9 @@
 import { lazy, Suspense } from "react";
-import { Link } from "react-router-dom";
 import { StatTile } from "../../components/StatTile";
 import { EmptyState, ErrorState } from "../../components/states";
 import { formatRelative } from "../../lib/format";
-import { useAlertEvents, useLeaksPerDay, useLeaksPerGroup, useSummary } from "../../lib/queries";
+import { useLeaksPerDay, useLeaksPerGroup, useSummary } from "../../lib/queries";
+import { RecentLeaksPanel, SourceHealthPanel, TagPanel } from "./panels";
 
 /**
  * Recharts is ~600 kB of the bundle and only this page uses it, so it loads on demand.
@@ -41,21 +41,19 @@ export function DashboardPage() {
   const summary = useSummary();
   const perDay = useLeaksPerDay(30);
   const perGroup = useLeaksPerGroup(8);
-  const events = useAlertEvents();
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>Overview</h1>
+          <h1>Dashboard</h1>
           <p className="page-sub">
             Ransomware leak activity across all monitored sources. Refreshes every minute.
           </p>
         </div>
       </div>
 
-      {/* Every tile below is a real query. The old dashboard hardcoded "Mentions: 6" and
-          read its alert counter from a collection nothing ever wrote to. */}
+      {/* Every tile below is a real query. */}
       <div className="grid-tiles">
         <StatTile
           label="Total leaks"
@@ -82,11 +80,6 @@ export function DashboardPage() {
           value={summary.data?.activeSources}
           loading={summary.isPending}
         />
-        <StatTile
-          label="Alerts fired"
-          value={summary.data?.alertsTriggered}
-          loading={summary.isPending}
-        />
         {/*
           The only tile that answers "is collection still running?".
           Every other tile counts leaks, so a working crawler that finds nothing new is
@@ -109,7 +102,7 @@ export function DashboardPage() {
 
       {summary.isError && <ErrorState error={summary.error} onRetry={summary.refetch} />}
 
-      <div className="grid-charts">
+      <div className="grid-charts grid-trend">
         <section className="card">
           <div className="card-head">
             <h2>Leaks per day — last 30 days</h2>
@@ -147,54 +140,16 @@ export function DashboardPage() {
         </section>
       </div>
 
-      <section className="card">
-        <div className="card-head">
-          <h2>Recent alert activity</h2>
-          <Link to="/dashboard/alerts">Manage alerts</Link>
-        </div>
+      <div className="grid-charts grid-thirds">
+        <TagPanel tag="country" title="Top victim countries" />
+        <TagPanel tag="sector" title="Top targeted sectors" />
+        <TagPanel tag="type" title="Incident types" />
+      </div>
 
-        {events.isPending ? (
-          <div className="card-body">
-            <div className="skeleton" style={{ height: 80 }} />
-          </div>
-        ) : events.isError ? (
-          <ErrorState error={events.error} onRetry={events.refetch} />
-        ) : events.data.data.length === 0 ? (
-          <EmptyState title="No alerts have fired yet">
-            <p>
-              Alert deliveries appear here once the collection pipeline is running and a
-              rule matches a new leak.
-            </p>
-          </EmptyState>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Alert</th>
-                  <th>Victim</th>
-                  <th>Group</th>
-                  <th>Matched on</th>
-                  <th>Status</th>
-                  <th>When</th>
-                </tr>
-              </thead>
-              <tbody>
-                {events.data.data.slice(0, 8).map((event) => (
-                  <tr key={event.id}>
-                    <td className="strong">{event.alertName}</td>
-                    <td>{event.victimName ?? "—"}</td>
-                    <td className="mono">{event.actorGroup}</td>
-                    <td className="mono">{event.matchedOn}</td>
-                    <td>{event.status}</td>
-                    <td className="num">{formatRelative(event.createdAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <div className="grid-charts">
+        <RecentLeaksPanel />
+        <SourceHealthPanel />
+      </div>
     </div>
   );
 }

@@ -27,6 +27,12 @@ export type IncidentRow = {
   leakSizeBytes: number | null;
   sourceSlug: string | null;
   sourceUrl: string | null;
+  /** Never empty: the leak site's own description, or one composed from the fields. */
+  summary: string;
+  /** `listing` is the leak site's wording; `composed` was written by the API from fields. */
+  summarySource: "listing" | "composed";
+  /** Every type the row has evidence for. Never empty. */
+  incidentTypes: string[];
 
   /** All null until the background sweep reaches this domain. */
   siteStatus: SiteStatus | null;
@@ -51,7 +57,7 @@ export type IncidentFilters = {
   sector?: string;
   status?: string;
   siteStatus?: SiteStatus;
-  /** `leaks.leak_type` — the incident classification, not the listing status. */
+  /** One value of `leaks.incident_types` — the incident classification, not the listing status. */
   type?: string;
   q?: string;
   sort?: IncidentSort;

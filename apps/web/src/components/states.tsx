@@ -4,8 +4,8 @@ import { ApiError } from "../lib/api";
 /**
  * Loading / empty / error states.
  *
- * The old app had none of these: every fetch failure went to `console.error` and the user
- * saw a permanently blank table with no indication anything had gone wrong.
+ * Every query renders one of these rather than a blank table, so a failed fetch always says
+ * that it failed.
  */
 
 export function Loading({ label = "Loading…" }: { label?: string }) {

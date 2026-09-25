@@ -1,9 +1,6 @@
 /**
- * The one place in the app that knows how to reach the API.
- *
- * The old client hardcoded `http://localhost:5000` and `http://localhost:5001` across nine
- * call sites in seven files, mixing fetch and axios, so the app could not be deployed
- * anywhere without an edit pass. Everything now goes through here.
+ * The one place in the app that knows how to reach the API. No component contains a
+ * hostname, so the app deploys anywhere without an edit pass.
  *
  * In development `VITE_API_URL` is unset, so requests go to the app's own origin and Vite's
  * proxy forwards /api to the backend — no CORS, and the session cookie stays first-party.

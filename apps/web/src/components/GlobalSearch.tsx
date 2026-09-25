@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { Search } from "./icons";
 
 /**
  * The search box in the app shell.
@@ -46,9 +47,7 @@ export function GlobalSearch() {
 
   return (
     <form className="global-search" onSubmit={submit} role="search">
-      <span className="search-icon" aria-hidden="true">
-        ⌕
-      </span>
+      <Search size={16} className="search-icon" />
       <input
         ref={inputRef}
         type="search"

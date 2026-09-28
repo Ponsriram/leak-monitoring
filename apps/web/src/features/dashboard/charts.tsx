@@ -49,7 +49,7 @@ export function LeaksPerDayChart({ data }: { data: { date: string; total: number
   return (
     <div className="chart-box">
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -18 }}>
+        <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id="leakFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="var(--series-1)" stopOpacity={0.26} />
@@ -67,7 +67,7 @@ export function LeaksPerDayChart({ data }: { data: { date: string; total: number
             minTickGap={28}
             tickFormatter={(value: string) => value.slice(5)}
           />
-          <YAxis tickLine={false} axisLine={false} width={44} allowDecimals={false} />
+          <YAxis tickLine={false} axisLine={false} width={52} allowDecimals={false} />
 
           {/* Crosshair + tooltip: an SVG chart is interactive by default. */}
           <Tooltip

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { signOut, useSession } from "../lib/auth-client";
 import { useLiveUpdates } from "../lib/live";
 import { GlobalSearch } from "./GlobalSearch";
@@ -72,6 +72,19 @@ function readRail(): boolean {
   }
 }
 
+const MOBILE_QUERY = "(max-width: 860px)";
+
+function useIsMobile(): boolean {
+  const [mobile, setMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = () => setMobile(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return mobile;
+}
+
 export function AppLayout() {
   const { data: session } = useSession();
   const navigate = useNavigate();
@@ -80,9 +93,19 @@ export function AppLayout() {
   const live = useLiveUpdates();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // Icon-only rail, remembered per browser so the choice survives a reload.
-  const [rail, setRail] = useState(readRail);
+  const [savedRail, setRail] = useState(readRail);
+  // On mobile the menu always starts as an icon rail and opens as a temporary overlay.
+  const isMobile = useIsMobile();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => setMobileOpen(false), [pathname, isMobile]);
+  const rail = isMobile ? !mobileOpen : savedRail;
 
   function toggleRail() {
+    if (isMobile) {
+      setMobileOpen((open) => !open);
+      return;
+    }
     setRail((current) => {
       const next = !current;
       try {
@@ -117,6 +140,9 @@ export function AppLayout() {
 
   return (
     <div className={rail ? "shell shell-rail" : "shell"}>
+      {isMobile && mobileOpen && (
+        <div className="sidebar-backdrop" onClick={() => setMobileOpen(false)} aria-hidden="true" />
+      )}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">

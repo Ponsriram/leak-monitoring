@@ -87,9 +87,30 @@ a { color: var(--accent); font-weight: 500; }
 .shell.shell-rail { grid-template-columns: 68px minmax(0, 1fr); }
 @media (prefers-reduced-motion: reduce) { .shell { transition: none; } }
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
-  .sidebar { display: none; }
+  .shell, .shell.shell-rail { grid-template-columns: minmax(0, 1fr); }
+  /* Icon rail stays in view; opening the menu overlays the page instead of resizing it. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 68px;
+    z-index: 40;
+    transition: width 0.2s ease;
+  }
+  .shell:not(.shell-rail) .sidebar {
+    width: min(248px, 85vw);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.35);
+  }
+  .main { margin-left: 68px; min-width: 0; }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.4);
+  }
 }
+@media (min-width: 861px) { .sidebar-backdrop { display: none; } }
 
 .sidebar {
   background: var(--side-bg);
@@ -696,6 +717,12 @@ select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-
 .feed-time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .recharts-cartesian-axis-tick text { fill: var(--muted); font-size: 11px; }
 .recharts-text.recharts-label { fill: var(--muted); }
+.recharts-wrapper, .recharts-surface { -webkit-tap-highlight-color: transparent; }
+@media (max-width: 860px) {
+  .recharts-wrapper:focus, .recharts-wrapper:focus-visible,
+  .recharts-surface:focus, .recharts-surface:focus-visible { outline: none; }
+  .recharts-tooltip-wrapper { pointer-events: none; }
+}
 
 .tooltip {
   background: var(--surface);

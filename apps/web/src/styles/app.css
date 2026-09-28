@@ -396,7 +396,7 @@ a { color: var(--accent); font-weight: 500; }
 }
 .grid-charts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   gap: 16px;
   margin-bottom: 20px;
 }
@@ -719,8 +719,8 @@ select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-
 .recharts-text.recharts-label { fill: var(--muted); }
 .recharts-wrapper, .recharts-surface { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 860px) {
-  .recharts-wrapper:focus, .recharts-wrapper:focus-visible,
-  .recharts-surface:focus, .recharts-surface:focus-visible { outline: none; }
+  .recharts-wrapper :focus, .recharts-wrapper :focus-visible,
+  .recharts-wrapper:focus, .recharts-wrapper:focus-visible { outline: none; }
   .recharts-tooltip-wrapper { pointer-events: none; }
 }
 
@@ -1721,6 +1721,16 @@ select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-
 }
 .live-badge:hover { border-color: var(--accent); }
 .live-open { color: var(--muted); margin-left: 2px; }
+
+/* The rail takes 68px on mobile, so the top bar lets the search shrink and drops the badge's map glyph. */
+@media (max-width: 860px) {
+  .topbar { gap: 8px; padding-inline: 12px; }
+  .global-search { min-width: 0; padding-inline: 10px; }
+  .global-search input { min-width: 0; width: 100%; }
+  .global-search kbd { display: none; }
+  .live-badge { padding: 7px 10px; }
+  .live-open { display: none; }
+}
 
 @media (max-width: 900px) {
   .map-body { flex-direction: column; }

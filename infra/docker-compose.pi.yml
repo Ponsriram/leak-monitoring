@@ -1,0 +1,22 @@
+# Override for running just the collection side (redis + tor + worker) on a remote host,
+# against a Postgres that already lives elsewhere (e.g. Neon). Use alongside the base file:
+#
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.pi.yml \
+#     --profile full up -d --build redis tor worker
+#
+# Only listing redis/tor/worker keeps postgres and api out of the run entirely, since the
+# worker below no longer depends on the local postgres service.
+#
+# depends_on is a mapping, and Compose deep-merges mappings across -f files rather than
+# replacing them — so without `!override` here, the base file's `postgres` dependency
+# survives the merge and gets started anyway.
+
+services:
+  worker:
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !override
+      redis:
+        condition: service_healthy
+      tor:
+        condition: service_healthy

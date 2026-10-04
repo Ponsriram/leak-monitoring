@@ -15,6 +15,7 @@ import dbPlugin from "./plugins/db.js";
 import errorHandler from "./plugins/error-handler.js";
 import webPlugin from "./plugins/web.js";
 import { crawlRoutes } from "./routes/crawl.js";
+import { exposureRoutes } from "./routes/exposures.js";
 import { healthRoutes } from "./routes/health.js";
 import { incidentRoutes } from "./routes/incidents.js";
 import { iocRoutes } from "./routes/iocs.js";
@@ -24,6 +25,7 @@ import { searchRoutes } from "./routes/search.js";
 import { sourceRoutes } from "./routes/sources.js";
 import { statsRoutes } from "./routes/stats.js";
 import { streamRoutes } from "./routes/stream.js";
+import { watchlistRoutes } from "./routes/watchlist.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -97,6 +99,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(incidentRoutes);
   await app.register(iocRoutes);
   await app.register(mobileRoutes);
+  await app.register(exposureRoutes);
+  await app.register(watchlistRoutes);
   await app.register(searchRoutes);
   await app.register(streamRoutes);
 

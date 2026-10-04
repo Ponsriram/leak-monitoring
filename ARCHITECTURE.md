@@ -78,6 +78,8 @@ with raw SQL but never migrates them.
 | `src/schema/enrichment.ts` | `domain_enrichment` — WHOIS, DNS, site status per domain |
 | `src/schema/iocs.ts` | Indicators of compromise from public feeds |
 | `src/schema/mobile.ts` | Scam phone-number reports (Bulk Intelligence · Mobile Number) |
+| `src/schema/exposures.ts` | Credentials, keys and card numbers found in pages — masked, never in the clear |
+| `src/schema/watchlist.ts` | `watchlist_entries` (what to watch for) and `watchlist_matches` (what turned up) |
 | `src/schema/auth.ts` | Better Auth's four tables |
 | `test/fixture-seed.ts` | CI-only fixture. Refuses to run against a database holding real crawls |
 | `test/schema.test.ts` | Constraint tests against PGlite (real Postgres, in WASM) |
@@ -91,7 +93,8 @@ with raw SQL but never migrates them.
 | `src/server.ts` | Boot + graceful shutdown |
 | `src/auth.ts` | Better Auth configuration |
 | `src/plugins/` | db pool, auth guard, error handler, serving the built web app |
-| `src/routes/` | leaks, incidents, iocs, search, sources, stats, crawl, stream, health |
+| `src/routes/` | leaks, incidents, iocs, exposures, watchlist, search, sources, stats, crawl, stream, health |
+| `src/lib/watch.ts` | Normalises what someone types into a watch value (`https://www.Acme.com/x` → `acme.com`) |
 
 ### `apps/web` — the dashboard
 
@@ -123,6 +126,7 @@ with raw SQL but never migrates them.
 | `intel/tasks.py` | arq worker: due-source sweep, request drain, enrichment, feeds |
 | `intel/feeds/` | Public feeds: URLhaus, ThreatFox, TweetFeed (-> `iocs`), ransomware.live (-> `leaks`), scam-number reports (-> `mobile_numbers`) |
 | `intel/extract/phones.py` | Phone-number regex, libphonenumber validation, threat-type / audience classification |
+| `intel/extract/secrets.py` | Finds credentials, API keys, password hashes and card numbers; returns masked previews and keyed fingerprints, never stores the value |
 | `sources.yaml` | The monitored sites. Mounted, not baked in. |
 
 ---
@@ -215,6 +219,31 @@ the summary. A row with no description gets one composed from its fields, marked
 country and sector with word lists. There is no ML stack: nothing to download, no GPU, and
 the same input always produces the same leaks.
 
+### Exposures are stored masked, never in the clear
+
+`extract/secrets.py` runs on every page whose content hash is new, after its listings are saved.
+It looks for email:password lines and labelled username/password pairs, bcrypt / sha-crypt /
+md5-crypt / argon2 hashes, vendor-prefixed API keys, private-key blocks, and Luhn-valid card
+numbers. Every rule is anchored to something structural, so a page that merely says "password"
+produces nothing, and a bare 32-hex string is left to the IOC feeds.
+
+What reaches the database is a masked `preview` (`j***@acme.com:********`, `AKIA…QRST`), the
+email's *domain*, and an HMAC-SHA256 `fingerprint` under `EXPOSURE_SALT`. `Storage.upsert_exposures`
+has no parameter the secret could travel in, so it cannot reach the table by accident. The domain
+is kept in the clear because it names an organisation, not a person, and is what the watchlist
+matches on. Detection runs inside a `try` so a bad pattern cannot fail a crawl.
+
+### The watchlist: the API asks, the worker answers
+
+`POST /api/watchlist` only records the question. The worker's `match_watchlist` job (every minute,
+off the crawl lock) matches each entry against rows first seen since its `matched_through`
+watermark; a new entry has none, so it is matched against *all* of history on the first tick.
+That is why an entry reads "matching…" before it reads "none yet". The watermark is set to the
+run's *start* minus ten minutes, not its end: a crawl still committing when a run began would
+otherwise have its rows skipped forever, and `ON CONFLICT DO NOTHING` makes seeing a row twice
+free. A `domain` entry matches itself and its subdomains (never `notacme.com`); a `keyword` is a
+substring of a victim name or indicator, with `_` and `%` treated literally.
+
 ### One origin in the browser
 
 Dev: Vite proxies `/api`. Production: the API serves the built app itself
@@ -246,6 +275,8 @@ crawl_requests   (standalone — the API writes, the worker claims)
 | `iocs` | Indicators from public feeds (URLhaus, ThreatFox, TweetFeed) |
 | `mobile_numbers` | Scam phone numbers found in public posts — one row per number per post |
 | `hunt_jobs` / `hunt_findings` | On-demand company lookups from Search |
+| `exposures` | Credentials, keys, hashes and cards found in crawled pages: masked preview + HMAC fingerprint, no plaintext |
+| `watchlist_entries` / `watchlist_matches` | Domains and keywords to watch for, and the leaks, indicators and exposures they matched |
 | `user` / `session` / `account` / `verification` | Better Auth |
 
 Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.source_id` is
@@ -295,6 +326,17 @@ count; lower `CRAWL_PAGE_CONCURRENCY` for sources that are much shallower than t
 
 **Sources decay.** Leak sites rotate addresses, get seized, or put a DDoS queue in front of
 the listing. `consecutive_failures` surfaces this on the Sources page.
+
+**Exposure detection finds little on ransomware listings.** Leak-site pages are victim names and
+countdowns; they rarely publish raw credentials, so the Exposures page is mostly empty until a
+source that does (a paste site, a forum, a channel) is added. `intel scan-secrets FILE` runs the
+detector on a saved page to show what a finding looks like. Hashes and cards are matched by
+format and checksum only, so a card number is a candidate, not a confirmed card: a bare
+checksum-valid number scores 50, and one beside "cvv" or "exp" scores 80.
+
+**The watchlist notifies nobody.** Matches appear on the Watchlist page with an unread count; there
+is no email, webhook or chat alert, and the alerts tables were removed in migration 0010.
+`watchlist_matches` is the hook for adding one.
 
 **Marketplaces and forums are out of scope.** The schema and extractor are built for
 ransomware victim disclosure. A drug market or a forum crawled with them produces noise, and

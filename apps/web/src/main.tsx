@@ -11,9 +11,11 @@ import { LeaksPage } from "./features/leaks/LeaksPage";
 import { IncidentsPage } from "./features/incidents/IncidentsPage";
 import { IocPage } from "./features/iocs/IocPage";
 import { LiveMapPage } from "./features/map/LiveMapPage";
+import { ExposuresPage } from "./features/exposures/ExposuresPage";
 import { MobileNumbersPage } from "./features/mobile/MobileNumbersPage";
 import { SearchPage } from "./features/search/SearchPage";
 import { SourcesPage } from "./features/sources/SourcesPage";
+import { WatchlistPage } from "./features/watchlist/WatchlistPage";
 import "./styles/app.css";
 
 const queryClient = new QueryClient({
@@ -54,6 +56,8 @@ const router = createBrowserRouter([
       { path: "darkweb", element: <IncidentsPage section="darkweb" /> },
       { path: "iocs", element: <IocPage /> },
       { path: "mobile", element: <MobileNumbersPage /> },
+      { path: "exposures", element: <ExposuresPage /> },
+      { path: "watchlist", element: <WatchlistPage /> },
       { path: "map", element: <LiveMapPage /> },
       { path: "sources", element: <SourcesPage /> },
     ],

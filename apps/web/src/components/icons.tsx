@@ -203,6 +203,20 @@ export const Shield = (p: IconProps) => (
   </Svg>
 );
 
+export const Eye = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+    <circle cx="12" cy="12" r="3" />
+  </Svg>
+);
+
+export const Key = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="15" r="4" />
+    <path d="m10.8 12.2 9.2-9.2M16 7l3 3M14 9l2 2" />
+  </Svg>
+);
+
 export const Menu = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 6h16M4 12h16M4 18h16" />

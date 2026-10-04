@@ -478,6 +478,72 @@ def extract_file(
     )
 
 
+@app.command("scan-secrets")
+def scan_secrets(
+    path: Path = typer.Argument(..., help="A text file to scan"),
+    load: bool = typer.Option(False, "--load", help="Write the findings to the database"),
+) -> None:
+    """Look for credentials, keys and card numbers in a local text file.
+
+    The offline path for trying the detector on saved page text, and for demonstrating it:
+    the sources we crawl rarely publish raw credentials, so a file is the quickest way to see
+    what a finding looks like. Only the masked preview is ever printed or stored.
+    """
+    from .extract.secrets import find_exposures
+
+    _setup()
+    settings = get_settings()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    found = find_exposures(text)
+
+    typer.echo(f"Found {len(found)} exposure(s) in {path.name}:")
+    for item in found:
+        typer.echo(
+            f"  {item.confidence:>3}  {item.kind.value:<16} {item.detector:<26} {item.preview}"
+        )
+
+    if not load:
+        typer.echo("\nDry run. Pass --load to write these to the database.")
+        return
+
+    async def work(storage: Storage, _: object):  # type: ignore[no-untyped-def]
+        return await storage.upsert_exposures(
+            [
+                {
+                    "kind": f.kind.value,
+                    "detector": f.detector,
+                    "fingerprint": f.fingerprint(settings.exposure_salt),
+                    "preview": f.preview,
+                    "email_domain": f.email_domain,
+                    "confidence": f.confidence,
+                }
+                for f in found
+            ],
+            source_id=None,
+            source_url=f"file:{path.name}",
+        )
+
+    new, seen = asyncio.run(_with_storage(work))
+    typer.echo(f"Loaded: {new} new, {seen} already known.")
+
+
+@app.command("watchlist-rematch")
+def watchlist_rematch() -> None:
+    """Match every watch entry against all of history, not just what is new.
+
+    The worker only looks at rows first seen since each entry's last match. Run this after
+    changing matching rules, or to repair a database whose matches were cleared.
+    """
+    _setup()
+
+    async def work(storage: Storage, _: object) -> tuple[int, int]:
+        reset = await storage.reset_watchlist_watermarks()
+        return reset, await storage.match_watchlist()
+
+    reset, new = asyncio.run(_with_storage(work))
+    typer.echo(f"Re-matched {reset} entr{'y' if reset == 1 else 'ies'}: {new} new match(es).")
+
+
 @app.command("repair-domains")
 def repair_domains(
     apply: bool = typer.Option(

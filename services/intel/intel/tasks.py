@@ -229,6 +229,18 @@ async def drain_hunt_jobs(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"handled": len(handled), "hunts": handled}
 
 
+async def match_watchlist(ctx: dict[str, Any]) -> dict[str, int]:
+    """Match the watchlist against whatever has arrived since it was last matched.
+
+    Once a minute, off the crawl lock: it is a few indexed lookups per entry and touches no
+    Tor, so a fifteen-minute crawl has no business gating it. A new entry is matched against
+    all history on the first tick after it is added — that is the whole of "the API never
+    matches anything itself".
+    """
+    new = await ctx["storage"].match_watchlist()
+    return {"new_matches": new}
+
+
 async def enrich_domains(ctx: dict[str, Any]) -> dict[str, int]:
     """Fill in WHOIS, technologies and site status for victim domains, a batch at a time.
 
@@ -436,6 +448,7 @@ class WorkerSettings:
         fetch_feeds,
         fetch_mobile_reports,
         fetch_ransomware_feed,
+        match_watchlist,
     ]
     on_startup = startup
     on_shutdown = shutdown
@@ -478,6 +491,14 @@ class WorkerSettings:
         cron(
             enrich_domains,
             second={5},
+            timeout=_settings.hunt_timeout_seconds,
+            max_tries=1,
+        ),
+        # A new watch entry should show its history within a minute, and new leaks should
+        # reach a watch entry soon after they land. Offset from the other per-minute crons.
+        cron(
+            match_watchlist,
+            second={25},
             timeout=_settings.hunt_timeout_seconds,
             max_tries=1,
         ),

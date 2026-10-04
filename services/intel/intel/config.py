@@ -152,6 +152,16 @@ class Settings(BaseSettings):
     # you want unattended continuity and have accepted that trade.
     mirror_failover: bool = Field(default=False, alias="CRAWL_MIRROR_FAILOVER")
 
+    # --- exposure detection ---
+    # Look for credentials, keys and card numbers in crawled pages. Findings are stored masked,
+    # never in the clear (see `extract/secrets.py`), so this is safe to leave on.
+    exposure_detection: bool = Field(default=True, alias="EXPOSURE_DETECTION")
+    # Key for the HMAC that fingerprints a finding. It is what stops a database dump from being
+    # tested against a dictionary of common emails and passwords, so a real deployment should
+    # set its own. Changing it later re-keys every future finding: old rows stop matching and
+    # a re-crawl inserts them again.
+    exposure_salt: str = Field(default="leakmon-dev-salt-change-me", alias="EXPOSURE_SALT")
+
     extractor: str = Field(default="rules", alias="INTEL_EXTRACTOR")
 
     sources_file: Path = Field(default=SERVICE_ROOT / "sources.yaml", alias="INTEL_SOURCES")

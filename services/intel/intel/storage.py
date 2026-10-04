@@ -13,7 +13,7 @@ import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Self
 
 import asyncpg
@@ -1285,6 +1285,134 @@ class Storage:
         new = inserted or 0
         return (new, len(reports) - new)
 
+    # ---------- exposures ----------
+
+    async def upsert_exposures(
+        self,
+        findings: list[dict[str, Any]],
+        *,
+        source_id: int | None,
+        source_url: str | None,
+    ) -> tuple[int, int]:
+        """Store detector findings. Returns (new, seen_again).
+
+        Takes *derived* fields only — kind, detector, fingerprint, preview, email_domain,
+        confidence. The detector's `Exposure.value` is not a parameter of anything here, so
+        the secret cannot reach the database by accident: there is no argument to put it in.
+
+        Re-crawling a page re-finds everything on it, so this is an upsert on
+        `(fingerprint, kind)`. `first_seen_at` is untouched on conflict; `last_seen_at`
+        advances; confidence only ever rises, because a later page can corroborate a finding
+        but a thinner one should not talk it down.
+        """
+        if not findings:
+            return (0, 0)
+
+        payload = json.dumps(findings)
+        inserted = await self._pool.fetchval(
+            """
+            with input as (
+                -- One row per finding within the batch. `on conflict do update` refuses to
+                -- touch a row twice in one statement, and a page can repeat a value.
+                select distinct on (fingerprint, kind) *
+                  from jsonb_to_recordset($1::jsonb) as t(
+                      kind text, detector text, fingerprint text, preview text,
+                      email_domain text, confidence int
+                  )
+                 order by fingerprint, kind, confidence desc
+            ),
+            upserted as (
+                insert into exposures (kind, detector, fingerprint, preview, email_domain,
+                                       confidence, source_id, source_url)
+                select kind::exposure_kind, detector, fingerprint, preview, email_domain,
+                       confidence, $2, $3
+                  from input
+                on conflict (fingerprint, kind) do update set
+                    confidence   = greatest(exposures.confidence, excluded.confidence),
+                    email_domain = coalesce(exposures.email_domain, excluded.email_domain),
+                    -- The first place it was seen stays the place it was first seen.
+                    source_id    = coalesce(exposures.source_id, excluded.source_id),
+                    source_url   = coalesce(exposures.source_url, excluded.source_url),
+                    last_seen_at = now()
+                returning (xmax = 0) as is_new
+            )
+            select count(*) filter (where is_new)::int from upserted
+            """,
+            payload,
+            source_id,
+            source_url,
+        )
+        new = inserted or 0
+        return (new, len(findings) - new)
+
+    # ---------- watchlist ----------
+
+    async def match_watchlist(self, *, overlap_seconds: int = 600) -> int:
+        """Match every watch entry against what has arrived since it was last matched.
+
+        Returns how many new matches were recorded.
+
+        An entry with no `matched_through` has never been matched, so it is matched against
+        all of history — that is the "I just added this, show me what we already hold" case,
+        and it is why the API never does this itself. After that each run looks only at rows
+        first seen since the watermark, so a quiet minute is a handful of indexed lookups.
+
+        The watermark is set to *the start of this run minus an overlap*, not to the end of
+        it. A row inserted by a crawl that was still committing when this run began carries a
+        `first_seen_at` earlier than the run's start; a watermark at the start would skip it
+        forever. The overlap means such a row is seen twice rather than never, and the unique
+        index on `(entry_id, target_type, target_id)` makes seeing it twice free.
+        """
+        started = await self._pool.fetchval("select now()")
+        watermark = started - timedelta(seconds=overlap_seconds)
+        entries = await self._pool.fetch(
+            "select id, kind::text as kind, value, matched_through from watchlist_entries"
+        )
+
+        total = 0
+        for entry in entries:
+            term = _like_escape(entry["value"])
+            # A domain matches itself and its subdomains; a keyword matches anywhere inside.
+            # The two kinds take different parameters, and asyncpg refuses a statement with a
+            # parameter nothing references, so each gets exactly the list it uses.
+            if entry["kind"] == "domain":
+                args: tuple[Any, ...] = (
+                    entry["value"], f"%.{term}", entry["matched_through"]
+                )
+            else:
+                args = (f"%{term}%", entry["matched_through"])
+
+            async with self._pool.acquire() as conn, conn.transaction():
+                for target, select_sql in _WATCH_SELECTS[entry["kind"]].items():
+                    total += await conn.fetchval(
+                        f"""
+                        with ins as (
+                            insert into watchlist_matches (entry_id, target_type, target_id)
+                            select $1::bigint, '{target}'::match_target, m.id
+                              from ({select_sql}) m
+                            on conflict (entry_id, target_type, target_id) do nothing
+                            returning 1
+                        )
+                        select count(*)::int from ins
+                        """,
+                        entry["id"],
+                        *args,
+                    )
+                await conn.execute(
+                    "update watchlist_entries set matched_through = $2 where id = $1",
+                    entry["id"],
+                    watermark,
+                )
+
+        if total:
+            log.info("watchlist matches", new=total, entries=len(entries))
+        return total
+
+    async def reset_watchlist_watermarks(self) -> int:
+        """Forget every watermark, so the next `match_watchlist` re-matches all of history."""
+        result = await self._pool.execute("update watchlist_entries set matched_through = null")
+        return int(result.split()[-1])
+
     async def domains_needing_enrichment(
         self, *, limit: int, max_age_seconds: int
     ) -> list[str]:
@@ -1394,6 +1522,41 @@ class Storage:
             facts.get("page_title"),
             facts.get("error"),
         )
+
+
+def _like_escape(value: str) -> str:
+    """Make `value` safe to embed in a LIKE pattern that declares `escape '\\'`."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# What each kind of watch entry selects, per table. `$2`.. are the parameters `match_watchlist`
+# passes (see there); `$N::timestamptz is null` is the "never matched, take all of history"
+# case. Domain entries test the exact value and then the subdomain pattern; the lower() on the
+# leak side is because `victim_domain` is stored as extracted, and the watch value is not.
+_WATCH_SELECTS: dict[str, dict[str, str]] = {
+    "domain": {
+        "leak": """select l.id from leaks l
+            where (lower(l.victim_domain) = $2 or lower(l.victim_domain) like $3 escape '\\')
+              and ($4::timestamptz is null or l.first_seen_at > $4)""",
+        "ioc": """select i.id from iocs i
+            where (lower(i.host) = $2 or lower(i.host) like $3 escape '\\')
+              and ($4::timestamptz is null or i.first_seen_at > $4)""",
+        "exposure": """select x.id from exposures x
+            where (x.email_domain = $2 or x.email_domain like $3 escape '\\')
+              and ($4::timestamptz is null or x.first_seen_at > $4)""",
+    },
+    "keyword": {
+        "leak": """select l.id from leaks l
+            where (l.victim_name ilike $2 escape '\\' or l.victim_domain ilike $2 escape '\\')
+              and ($3::timestamptz is null or l.first_seen_at > $3)""",
+        "ioc": """select i.id from iocs i
+            where i.value ilike $2 escape '\\'
+              and ($3::timestamptz is null or i.first_seen_at > $3)""",
+        "exposure": """select x.id from exposures x
+            where x.email_domain ilike $2 escape '\\'
+              and ($3::timestamptz is null or x.first_seen_at > $3)""",
+    },
+}
 
 
 _ONION_HOST_RE = re.compile(r"\b([a-z2-7]{56}\.onion)\b", re.I)

@@ -17,6 +17,7 @@ import structlog
 from .collectors import classify_onion_urls, get_collector, onion_host, page_url, to_text
 from .config import Settings
 from .extract import get_extractor, link_spans
+from .extract.secrets import find_exposures
 from .models import ExtractedLeak
 from .scheduling import page_waves
 from .storage import SourceRow, Storage, UpsertResult
@@ -263,6 +264,11 @@ async def crawl_source(
 
         await storage.mark_extracted(page_id)
 
+        if settings.exposure_detection:
+            await _record_exposures(
+                text, source=source, storage=storage, settings=settings, url=page.url
+            )
+
         log.info(
             "page processed",
             source=source.slug,
@@ -360,6 +366,49 @@ async def crawl_source(
         )
 
     return result
+
+
+async def _record_exposures(
+    text: str,
+    *,
+    source: SourceRow,
+    storage: Storage,
+    settings: Settings,
+    url: str,
+) -> int:
+    """Look for credentials, keys and cards in a changed page and store what is found.
+
+    Runs only on a page whose content hash is new, so an unchanged page costs nothing here
+    either. Failure is contained: this is a second opinion on a page whose listings have
+    already been saved, and a bug in a regex must not turn a successful crawl into a failed
+    one. The detector's `value` never reaches storage — only the masked preview and the keyed
+    fingerprint do.
+    """
+    try:
+        found = find_exposures(text)
+        if not found:
+            return 0
+        new, _ = await storage.upsert_exposures(
+            [
+                {
+                    "kind": f.kind.value,
+                    "detector": f.detector,
+                    "fingerprint": f.fingerprint(settings.exposure_salt),
+                    "preview": f.preview,
+                    "email_domain": f.email_domain,
+                    "confidence": f.confidence,
+                }
+                for f in found
+            ],
+            source_id=source.id,
+            source_url=url,
+        )
+    except Exception:  # noqa: BLE001 - deliberate: never fail a crawl over a detector
+        log.exception("exposure detection failed", source=source.slug, url=url)
+        return 0
+
+    log.info("exposures found", source=source.slug, found=len(found), new=new)
+    return new
 
 
 async def _record_mirrors(

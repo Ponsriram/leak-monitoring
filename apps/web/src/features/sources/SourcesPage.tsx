@@ -14,7 +14,7 @@ export function SourcesPage() {
   const failing = rows.filter((row) => row.health === "failing").length;
 
   return (
-    <div className="page page-fill">
+    <div className="page page-flow">
       <div className="page-head">
         <div>
           <h1>Sources</h1>

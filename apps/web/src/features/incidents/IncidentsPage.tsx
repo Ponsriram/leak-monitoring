@@ -144,7 +144,7 @@ export function IncidentsPage({ section }: { section: IncidentSection }) {
   }
 
   return (
-    <div className="page page-fill">
+    <div className="page page-flow">
       <div className="page-head">
         <div>
           <h1>{config.title}</h1>

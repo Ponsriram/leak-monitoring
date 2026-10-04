@@ -97,7 +97,7 @@ export function MobileNumbersPage() {
   }
 
   return (
-    <div className="page page-fill">
+    <div className="page page-flow">
       <div className="page-head">
         <div>
           <h1>Bulk Intelligence · Mobile Numbers</h1>

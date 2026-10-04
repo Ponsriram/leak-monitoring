@@ -290,73 +290,35 @@ a { color: var(--accent); font-weight: 500; }
 @media (max-width: 640px) { .page { padding: 20px 16px 48px; } }
 
 /*
- * Table pages: the page stands still and the table scrolls.
+ * Table pages scroll as a whole.
  *
- * On General, Ransomware, Dark Web, IOC, Leaks and Sources the page fills exactly the height
- * left under the top bar. The heading and the filters stay where they are, the table card
- * takes the remaining height, and its `.table-wrap` is the only thing that scrolls — both
- * ways, with the header row pinned (`th` is sticky) and the pager pinned below it. Paging
- * through results never scrolls the filters out of reach.
- *
- * Only where there is room for it. On a phone, or a window too short to give the table a
- * useful height, the page falls back to scrolling as a whole: a 150px table viewport with
- * its own scrollbar is worse than a long page.
+ * An earlier layout pinned the page to the window height and made the table's own container
+ * the only thing that scrolled. It looked tidy on a tall monitor and failed everywhere else:
+ * on a laptop the heading, filters and any strip above the table left room for three or four
+ * rows, and a page with two tables gave each a sliver. A table is as tall as its rows and the
+ * page scrolls past it; the pager sits directly under the rows.
  */
-@media (min-width: 861px) and (min-height: 560px) {
-  .main > .page-fill {
-    flex: 1 1 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    max-width: none;
-    padding-top: 18px;
-    padding-bottom: 18px;
-  }
-  .page-fill > * { flex: none; }
-  .page-fill > .page-head,
-  .page-fill > .filter-bar,
-  .page-fill > .arrivals-card { margin-bottom: 12px; }
-  /* Every pixel of chrome above the table is a pixel less table. */
-  .page-fill .table-card > .card-head { padding-block: 9px; }
-  .page-fill .arrivals-head { padding-block: 6px; }
-  .page-fill .arrivals { padding-block: 9px; }
+.page-flow > .table-card { margin-bottom: 16px; }
 
-  .page-fill > .table-card {
-    flex: 1 1 0;
-    /* Below this the table is not worth a viewport of its own; the page scrolls instead. */
-    min-height: 240px;
-    display: flex;
-    flex-direction: column;
-  }
-  .table-card > * { flex: none; }
-  .table-card > .card-body.no-pad {
-    flex: 1 1 0;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .table-card > .card-body > * { flex: none; }
-  .table-card .table-wrap {
-    flex: 1 1 0;
-    min-height: 0;
-    overflow: auto;
-  }
-}
+/* Thin scrollbars for the page and for table containers.
 
-/* The table container's own scrollbars — visible, since they are now the page's only ones. */
-.table-wrap {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-2) transparent;
-}
-.table-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
-.table-wrap::-webkit-scrollbar-track { background: var(--surface-2); }
-.table-wrap::-webkit-scrollbar-thumb {
-  background: var(--border-2);
-  border-radius: 999px;
-  border: 2px solid var(--surface-2);
-}
+   Sized with the `::-webkit-scrollbar` pseudo-elements and deliberately NOT with
+   `scrollbar-width`: in current Chromium, setting `scrollbar-width` or `scrollbar-color` turns
+   the pseudo-element rules off, so the two cannot be combined. Firefox has no pseudo-elements
+   and gets the standard properties instead. */
+.main::-webkit-scrollbar,
+.table-wrap::-webkit-scrollbar { width: 7px; height: 7px; }
+.main::-webkit-scrollbar-track,
+.table-wrap::-webkit-scrollbar-track { background: transparent; }
+.main::-webkit-scrollbar-thumb,
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 999px; }
+.main::-webkit-scrollbar-thumb:hover,
 .table-wrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-.table-wrap::-webkit-scrollbar-corner { background: var(--surface-2); }
+.table-wrap::-webkit-scrollbar-corner { background: transparent; }
+@supports not selector(::-webkit-scrollbar) {
+  .main,
+  .table-wrap { scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+}
 
 .page-head {
   display: flex;
@@ -1110,17 +1072,25 @@ select:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-
   box-shadow: var(--shadow);
 }
 .search-bar:focus-within { border-color: var(--accent); }
-.search-input {
+/* `.search-bar .search-input`, not `.search-input`: the global `input[type="search"]` rule has
+   higher specificity, so the bare class lost and the input kept its own border, padding and
+   background — a bordered box nested inside the bordered bar. */
+.search-bar .search-input {
   flex: 1;
+  min-width: 0;
   border: 0;
-  padding: 0;
-  background: none;
+  border-radius: 0;
+  padding: 4px 0;
+  background: transparent;
+  box-shadow: none;
   color: var(--text);
   font: inherit;
   font-size: 15px;
   outline: none;
 }
-.search-bar .search-input:focus { box-shadow: none; }
+.search-bar .search-input:focus { border: 0; box-shadow: none; }
+/* The bar is the one visible field, so it carries the focus ring. */
+.search-bar:focus-within { box-shadow: 0 0 0 3px var(--accent-ring); }
 
 /*
  * The live badge. Colour alone would carry the whole meaning for a sighted user and none of

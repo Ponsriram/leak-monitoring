@@ -87,7 +87,7 @@ export function LeaksPage() {
   const hasFilters = Boolean(search || group || status || country || sector);
 
   return (
-    <div className="page page-fill">
+    <div className="page page-flow">
       <div className="page-head">
         <div>
           <h1>Leaks</h1>

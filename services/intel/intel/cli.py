@@ -470,18 +470,12 @@ def extract_file(
 
     async def work(storage: Storage, _: object):  # type: ignore[no-untyped-def]
         row = await storage.get_source(group)
-        upserted = await storage.upsert_leaks(leaks, source_id=row.id if row else None)
-        # Any path that creates leaks evaluates alerts, or a leak loaded this way would be
-        # the one thing a watching alert silently misses.
-        events = await storage.match_alerts(upserted.new_leak_ids)
-        return upserted, events
+        return await storage.upsert_leaks(leaks, source_id=row.id if row else None)
 
-    result, events = asyncio.run(_with_storage(work))
+    result = asyncio.run(_with_storage(work))
     typer.echo(
         f"Loaded: {result.inserted} new, {result.updated} updated, {result.skipped} skipped."
     )
-    if events:
-        typer.echo(f"{events} alert event(s) created.")
 
 
 @app.command("repair-domains")

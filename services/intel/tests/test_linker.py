@@ -41,7 +41,7 @@ def test_url_printed_above_its_victim_binds_to_that_victim() -> None:
     Termite prints the victim's link on the line above the company name. Under
     "attributes attach to the preceding victim", each record took the *next* company's
     domain — and since `dedupe_hash` is built from `victim_domain`, every victim was filed
-    under another company's identity and domain alerts would have fired for the wrong one.
+    under another company's identity and enriched with the wrong company's WHOIS.
     """
     leaks = link_spans(
         [

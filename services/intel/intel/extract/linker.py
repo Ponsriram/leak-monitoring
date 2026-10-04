@@ -101,8 +101,8 @@ def link_spans(
 
     Under "attributes follow the victim", jdyoung.com attached to Affinia Healthcare and
     every listing on the page ended up with the next listing's domain. That is not a
-    cosmetic error: `victim_domain` is what `dedupe_hash` is built from and what domain
-    alerts match on, so it silently filed each victim under another company's identity.
+    cosmetic error: `victim_domain` is what `dedupe_hash` is built from and what the
+    enrichment joins on, so it silently filed each victim under another company's identity.
 
     Dates, sizes and statuses keep the reading-order rule, because those genuinely do follow
     the name — including trailing prose ("…have been released.") that sits closer to the

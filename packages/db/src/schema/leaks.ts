@@ -82,7 +82,7 @@ export const leaks = pgTable(
     publishedAt: timestamp("published_at", { withTimezone: true }),
     /** The original text, kept so a bad parse can be audited rather than guessed at. */
     publishedAtRaw: text("published_at_raw"),
-    /** Set once, on insert. Drives "new leaks" and alerting. */
+    /** Set once, on insert. Drives "new leaks". */
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     /** Touched on every crawl that still sees this listing. Drives "is it still up?". */
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),

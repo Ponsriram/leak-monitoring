@@ -92,8 +92,7 @@ class UpsertResult:
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
-    # Ids of rows that were genuinely new. Alert matching runs against exactly these, so a
-    # re-crawl of an unchanged listing cannot re-notify anyone.
+    # Ids of rows that were genuinely new, as opposed to listings seen again.
     new_leak_ids: list[int] = field(default_factory=list)
 
     @property
@@ -633,63 +632,6 @@ class Storage:
                 row["id"], victim_domain, new_hash,
             )
             return "repaired"
-
-    # ---------- alerts ----------
-
-    async def match_alerts(self, leak_ids: list[int]) -> int:
-        """Match the given leaks against every enabled alert. Returns events created.
-
-        Lives here rather than in `tasks.py` so the CLI and the scheduled worker run exactly
-        the same matcher.
-
-        Matching is expressed as SQL over typed matchers, never a regex built from user
-        input: an alert's `match_kind` is one of four fixed behaviours, so there is no
-        pattern for a user to make pathological.
-
-        Writing to `alert_events` is idempotent by construction — UNIQUE (alert_id, leak_id)
-        means a retry or a duplicate message cannot produce a second notification.
-        """
-        if not leak_ids:
-            return 0
-
-        matched = await self._pool.fetchval(
-            """
-            with candidates as (
-                select a.id as alert_id, l.id as leak_id, a.channel, a.target,
-                       case
-                           when a.match_kind = 'actor_group' then 'actor_group'
-                           when a.match_kind = 'domain' then 'victim_domain'
-                           else 'victim_name'
-                       end as matched_on
-                  from alerts a
-                  join leaks l on l.id = any($1::bigint[])
-                 where a.enabled
-                   and case a.match_kind
-                         when 'exact' then
-                             lower(coalesce(l.victim_name, '')) = a.match_value
-                         when 'domain' then
-                             lower(coalesce(l.victim_domain, '')) = a.match_value
-                             or lower(coalesce(l.victim_domain, '')) like '%.' || a.match_value
-                         when 'substring' then
-                             position(a.match_value in
-                                      lower(coalesce(l.victim_name, '') || ' ' ||
-                                            coalesce(l.victim_domain, ''))) > 0
-                         when 'actor_group' then
-                             l.actor_group = a.match_value
-                       end
-            ),
-            inserted as (
-                insert into alert_events (alert_id, leak_id, matched_on, channel, target, status)
-                select alert_id, leak_id, matched_on, channel, target, 'pending'
-                  from candidates
-                on conflict (alert_id, leak_id) do nothing
-                returning 1
-            )
-            select count(*) from inserted
-            """,
-            leak_ids,
-        )
-        return int(matched or 0)
 
     # ---------- mirrors ----------
 

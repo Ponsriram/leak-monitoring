@@ -71,6 +71,13 @@
       "when": 1789764196419,
       "tag": "0009_previous_zombie",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790954673962,
+      "tag": "0010_drop_alerts",
+      "breakpoints": true
     }
   ]
 }

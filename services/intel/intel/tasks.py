@@ -315,9 +315,6 @@ async def fetch_ransomware_feed(ctx: dict[str, Any]) -> dict[str, Any]:
     Every 15 minutes rather than hourly with the indicator feeds: the endpoint returns the
     newest 100 victims, and a group posting a batch of forty would push earlier victims out
     of that window between two hourly runs. It is one small JSON request.
-
-    New victims go through alert matching exactly as crawled ones do — an alert on a company
-    name must fire whichever route the listing arrived by.
     """
     settings = ctx["settings"]
     if not settings.feeds_enabled:
@@ -332,14 +329,8 @@ async def fetch_ransomware_feed(ctx: dict[str, Any]) -> dict[str, Any]:
         return {"error": str(exc)[:200]}
 
     result = await storage.upsert_leaks(leaks, source_id=None)
-    events = await storage.match_alerts(result.new_leak_ids)
-    log.info(
-        "ransomware.live stored",
-        new=result.inserted,
-        seen_again=result.updated,
-        alert_events=events,
-    )
-    return {"new": result.inserted, "seen_again": result.updated, "alert_events": events}
+    log.info("ransomware.live stored", new=result.inserted, seen_again=result.updated)
+    return {"new": result.inserted, "seen_again": result.updated}
 
 
 async def fetch_mobile_reports(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -407,29 +398,12 @@ async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
 
     result = await crawl_source(source, storage=storage, settings=ctx["settings"])
 
-    # One source is still a source of new leaks, so it evaluates alerts like a full run.
-    events = await storage.match_alerts(result.leaks.new_leak_ids)
-
     return {
         "slug": result.slug,
         "status": result.status,
         "new": result.leaks.inserted,
         "seen_again": result.leaks.updated,
-        "alert_events": events,
     }
-
-
-async def match_alerts(ctx: dict[str, Any], leak_ids: list[int]) -> dict[str, int]:
-    """Match new leaks against alert rules and record deliveries.
-
-    Only the leaks passed in are considered, so cost follows what arrived rather than the
-    size of the table. The matching itself lives in `Storage.match_alerts` so the CLI and
-    the crawl pipeline run the same matcher rather than a second copy of the SQL.
-    """
-    storage: Storage = ctx["storage"]
-    matched = await storage.match_alerts(leak_ids)
-    log.info("alert matching complete", leaks=len(leak_ids), new_events=matched)
-    return {"matched": matched}
 
 
 _settings = get_settings()
@@ -462,7 +436,6 @@ class WorkerSettings:
         fetch_feeds,
         fetch_mobile_reports,
         fetch_ransomware_feed,
-        match_alerts,
     ]
     on_startup = startup
     on_shutdown = shutdown

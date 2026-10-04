@@ -572,13 +572,6 @@ async def run_pipeline(
 
     run = RunResult(sources=list(results))
 
-    # Alert matching, driven by the ids that were actually inserted, so every path that can
-    # create a leak also evaluates it.
-    if run.new_leak_ids:
-        events = await storage.match_alerts(run.new_leak_ids)
-        if events:
-            log.info("alert events created", events=events, new_leaks=len(run.new_leak_ids))
-
     log.info(
         "run complete",
         sources=len(run.sources),

@@ -101,8 +101,6 @@ echo "== incidents =="
 check "GET /api/incidents/general -> 200" 200 "$(status -b "$JAR" $API/api/incidents/general)"
 check "every row carries a summary" "yes" "$(curl -s -b "$JAR" "$API/api/incidents/general?limit=50" | node -pe 'const d=JSON.parse(require("fs").readFileSync(0)).data; d.length>0 && d.every(r=>typeof r.summary==="string" && r.summary.length>0) ? "yes":"no"')"
 check "every row carries at least one type" "yes" "$(curl -s -b "$JAR" "$API/api/incidents/general?limit=50" | node -pe 'const d=JSON.parse(require("fs").readFileSync(0)).data; d.length>0 && d.every(r=>Array.isArray(r.incidentTypes) && r.incidentTypes.length>0) ? "yes":"no"')"
-# The alerts feature was removed; its route must not linger as a half-working endpoint.
-check "alerts route is gone -> 404" 404 "$(status -b "$JAR" $API/api/alerts)"
 
 echo "== error shape =="
 check "404 body has requestId" "yes" "$(curl -s $API/api/nope | node -pe 'JSON.parse(require("fs").readFileSync(0)).requestId?"yes":"no"')"

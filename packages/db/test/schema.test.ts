@@ -5,7 +5,6 @@
  *
  *   - re-running the pipeline never duplicates -> UNIQUE (dedupe_hash) + upsert
  *   - "what's new" is answerable               -> first_seen_at set once, last_seen_at touched
- *   - an alert is recorded once per leak       -> UNIQUE (alert_id, leak_id)
  *   - one account per email                    -> UNIQUE (user.email)
  *   - status is a closed set                   -> leak_status enum
  */
@@ -79,8 +78,6 @@ describe("migration", () => {
 
     for (const expected of [
       "account",
-      "alert_events",
-      "alerts",
       "crawl_runs",
       "leaks",
       "raw_pages",
@@ -204,51 +201,6 @@ describe("leaks.dedupe_hash", () => {
           sourceId: 999_999,
         }),
       pgError(/violates foreign key constraint/),
-    );
-  });
-});
-
-describe("alert delivery idempotency", () => {
-  it("rejects sending the same leak to the same alert twice", async () => {
-    const owner = await makeUser("user-idem", "idem@example.com");
-    const source = await makeSource("alert-test");
-
-    const [alert] = await db
-      .insert(schema.alerts)
-      .values({
-        ownerId: owner.id,
-        name: "Acme watch",
-        matchKind: "substring",
-        matchValue: "acme",
-        channel: "email",
-        target: "analyst@example.com",
-      })
-      .returning();
-
-    const [leak] = await db
-      .insert(schema.leaks)
-      .values({
-        dedupeHash: "hash-alerted",
-        actorGroup: "lockbit",
-        victimName: "Acme Corp",
-        sourceId: source.id,
-      })
-      .returning();
-
-    const event = {
-      alertId: alert!.id,
-      leakId: leak!.id,
-      matchedOn: "victim_name",
-      channel: "email" as const,
-      target: "analyst@example.com",
-    };
-
-    await db.insert(schema.alertEvents).values(event);
-
-    // A worker retry or a duplicate queue message must not produce a second email.
-    await assert.rejects(
-      () => db.insert(schema.alertEvents).values(event),
-      pgError(/duplicate key value violates unique constraint/),
     );
   });
 });

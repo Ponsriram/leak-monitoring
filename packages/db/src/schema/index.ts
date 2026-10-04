@@ -2,7 +2,6 @@ export * from "./auth.js";
 export * from "./sources.js";
 export * from "./crawls.js";
 export * from "./leaks.js";
-export * from "./alerts.js";
 export * from "./search.js";
 export * from "./enrichment.js";
 export * from "./hunt.js";

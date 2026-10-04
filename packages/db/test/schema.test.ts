@@ -425,3 +425,95 @@ describe("mobile_numbers", () => {
     assert.equal(result.rows[0]!.count, 2);
   });
 });
+
+describe("exposures", () => {
+  const finding = {
+    kind: "credential_pair" as const,
+    detector: "email_password",
+    fingerprint: "f".repeat(64),
+    preview: "j***@acme.com:********",
+    emailDomain: "acme.com",
+    confidence: 65,
+  };
+
+  it("keeps one row per fingerprint and kind", async () => {
+    await db.insert(schema.exposures).values(finding);
+    await assert.rejects(
+      db.insert(schema.exposures).values(finding),
+      pgError(/exposures_fingerprint_kind_key/),
+    );
+    // The same value as a different kind is a different fact.
+    await db.insert(schema.exposures).values({ ...finding, kind: "api_key" });
+  });
+
+  it("rejects a confidence outside 0-100", async () => {
+    await assert.rejects(
+      db.insert(schema.exposures).values({ ...finding, fingerprint: "a", confidence: 101 }),
+      pgError(/exposures_confidence_range/),
+    );
+  });
+
+  it("refuses a finding with no preview", async () => {
+    await assert.rejects(
+      db.insert(schema.exposures).values({ ...finding, fingerprint: "b", preview: "  " }),
+      pgError(/exposures_preview_present/),
+    );
+  });
+
+  it("survives the deletion of the source it was found on", async () => {
+    const source = await makeSource("exposure-source");
+    const [row] = await db
+      .insert(schema.exposures)
+      .values({ ...finding, fingerprint: "c", sourceId: source.id })
+      .returning();
+    await db.delete(schema.sources).where(eq(schema.sources.id, source.id));
+
+    const [after] = await db
+      .select()
+      .from(schema.exposures)
+      .where(eq(schema.exposures.id, row!.id));
+    assert.equal(after!.sourceId, null);
+  });
+});
+
+describe("watchlist", () => {
+  async function makeEntry(value: string, kind: "domain" | "keyword" = "domain") {
+    const [row] = await db.insert(schema.watchlistEntries).values({ kind, value }).returning();
+    return row!;
+  }
+
+  it("keeps one entry per kind and value", async () => {
+    await makeEntry("dup.example");
+    await assert.rejects(makeEntry("dup.example"), pgError(/watchlist_entries_kind_value_key/));
+    // The same string as a keyword is a different question.
+    await makeEntry("dup.example", "keyword");
+  });
+
+  it("refuses a blank value", async () => {
+    await assert.rejects(makeEntry("   "), pgError(/watchlist_entries_value_present/));
+  });
+
+  it("starts with no watermark, so the worker matches all of history", async () => {
+    const entry = await makeEntry("fresh.example");
+    assert.equal(entry.matchedThrough, null);
+  });
+
+  it("records a match once per entry and target, and cascades with the entry", async () => {
+    const entry = await makeEntry("cascade.example");
+    const match = { entryId: entry.id, targetType: "leak" as const, targetId: 42 };
+
+    await db.insert(schema.watchlistMatches).values(match);
+    await assert.rejects(
+      db.insert(schema.watchlistMatches).values(match),
+      pgError(/watchlist_matches_entry_target_key/),
+    );
+    // Same id in a different table is a different record.
+    await db.insert(schema.watchlistMatches).values({ ...match, targetType: "ioc" });
+
+    await db.delete(schema.watchlistEntries).where(eq(schema.watchlistEntries.id, entry.id));
+    const left = await db.execute<{ count: number }>(
+      sql`select count(*)::int as count from watchlist_matches where entry_id = ${entry.id}`,
+    );
+    assert.equal(left.rows[0]!.count, 0);
+  });
+});

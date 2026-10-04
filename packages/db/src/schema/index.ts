@@ -7,3 +7,5 @@ export * from "./enrichment.js";
 export * from "./hunt.js";
 export * from "./iocs.js";
 export * from "./mobile.js";
+export * from "./exposures.js";
+export * from "./watchlist.js";

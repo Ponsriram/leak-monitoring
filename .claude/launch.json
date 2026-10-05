@@ -4,8 +4,23 @@
     {
       "name": "web-dev-docker-api",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["C:/Users/ponsr/Desktop/leak-monitoring/apps/web/node_modules/vite/bin/vite.js", "--config", "C:/Users/ponsr/AppData/Local/Temp/claude/C--Users-ponsr-Desktop-leak-monitoring/fbed3d2b-be01-470d-b759-5cc6ba476363/scratchpad/vite.preview.config.mjs"],
+      "runtimeArgs": [
+        "C:/Users/ponsr/Desktop/leak-monitoring/apps/web/node_modules/vite/bin/vite.js",
+        "--config",
+        "C:/Users/ponsr/AppData/Local/Temp/claude/C--Users-ponsr-Desktop-leak-monitoring/fbed3d2b-be01-470d-b759-5cc6ba476363/scratchpad/vite.preview.config.mjs"
+      ],
       "port": 5174
+    },
+    {
+      "name": "ours-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "-w",
+        "@leak/web"
+      ],
+      "port": 5173
     }
   ]
 }

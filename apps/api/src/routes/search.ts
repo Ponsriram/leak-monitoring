@@ -18,12 +18,10 @@ import { requireAuth } from "../plugins/auth.js";
  */
 
 /**
- * How fresh a finished hunt has to be to answer a new request for the same company.
- *
- * Matches the worker's `HUNT_CACHE_TTL` default. Duplicated rather than shared because the
- * two processes have no config channel between them — if you change one, change both. The
- * consequence of drift is mild in one direction (the API re-queues a hunt the worker would
- * have considered fresh) and invisible in the other.
+ * How fresh a finished hunt has to be to answer a new request for the same company. An hour
+ * is a compromise between showing an analyst something current and hammering other people's
+ * registries every time someone retypes a company name. Owned by the API: the worker does not
+ * cache hunts, it runs whatever was queued.
  */
 const HUNT_CACHE_MS = 60 * 60_000;
 

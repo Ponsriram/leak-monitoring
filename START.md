@@ -142,16 +142,26 @@ npm run intel -- feeds
 
 ## 4. Automatic crawling
 
-Already running — nothing to do. The worker sweeps every 5 minutes for sources whose interval
-has elapsed, and every 10 seconds for anything the **Sync now** button has queued.
+Already running — nothing to do. Every 5 minutes (`CRAWL_SWEEP_INTERVAL_MINUTES`) the worker
+looks for work that is due. If any is, it starts one **crawl cycle**: the due pages are queued in
+Postgres, several workers fetch them at once (`CRAWL_WORKERS`, 6 by default, however many worker
+processes run), changed pages are extracted, failures are retried later, and the cycle closes with
+a report. Only one cycle runs at a time. Every 10 seconds it also checks for **Sync now** clicks;
+a click joins the running cycle instead of starting a second one.
 
-Watch it:
+How often things are fetched again: page 1 of a listing every `crawl_interval_seconds` (15 minutes),
+deeper listing pages every `deep_crawl_interval_seconds` (6 hours), pages reached by following a
+link every week (`CRAWL_LINK_INTERVAL`). Set the first two per source in `sources.yaml`.
+
+Watch it (the end-of-cycle report is logged with a `[CRAWL]` prefix):
 
 ```powershell
 npm run infra:logs
 ```
 
-Or trigger a crawl from the UI with **Sync now** on the Leaks page.
+Or trigger a crawl from the UI with **Sync now** on the Leaks page. All the settings, with their
+defaults, are documented in `.env.example`. `CRAWL_ENGINE=legacy` switches back to the original
+source-at-a-time crawler; `npm run intel -- run` always uses that one.
 
 ---
 
@@ -236,6 +246,9 @@ npm test -w @leak/db
   address in your browser. Remove it to fall back to http://localhost:8080.
 - **`password authentication failed for user "leak"`** — confirm `DATABASE_URL` in `.env` says port **5433**, not 5432.
 - **Every source fails to crawl** — check Tor: `npm run infra:ps` (the `tor` row should be healthy).
+- **Nothing is being crawled** — sources ship disabled (`sources enable <slug>`), and nothing is
+  fetched until a URL is due. Sync now forces everything regardless.
+- **Healthcheck on the Raspberry Pi** — run `bash scripts/pi-health.sh` on the Pi.
 - **Port already in use** — change `API_PORT` / `WEB_PORT` in `.env`.
 
 ---

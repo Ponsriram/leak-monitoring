@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
+
+import httpx
+
+FetchKind = Literal["ok", "transient", "permanent"]
 
 
 @dataclass(slots=True)
@@ -54,3 +59,76 @@ def page_url(base_url: str, page_no: int, style: str) -> str | None:
             return f"{base_url}{separator}offset={(page_no - 1) * 25}"
         case _:
             return None
+
+
+@dataclass(slots=True)
+class FetchResult:
+    """One fetch attempt, described fully enough for the queue to decide what happens next.
+
+    `kind` is the whole decision: `ok` — a page worth processing; `transient` — failed in a way
+    another attempt may fix; `permanent` — will not improve by retrying. The collector only
+    *classifies*. Whether and when to try again is the queue's decision, never the collector's.
+    """
+
+    url: str
+    kind: FetchKind
+    text: str | None = None
+    http_status: int | None = None
+    response_ms: int = 0
+    size_bytes: int = 0
+    content_type: str | None = None
+    error: str | None = None
+
+
+# Statuses where trying again can plausibly succeed. 408/425/429 are the server asking for a
+# later try; every 5xx is a server that failed to answer rather than one refusing us.
+_TRANSIENT_STATUS = frozenset({408, 425, 429})
+
+# Content types that are pages. A missing Content-Type is treated as a page: plenty of onion
+# services send none, and refusing them would drop sources that work today.
+_PAGE_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+
+
+def classify_status(status: int) -> FetchKind:
+    """HTTP status -> ok / transient / permanent.
+
+    >>> [classify_status(s) for s in (200, 301, 404, 410, 403, 429, 500, 503)]
+    ['ok', 'ok', 'permanent', 'permanent', 'permanent', 'transient', 'transient', 'transient']
+    """
+    if status < 400:
+        return "ok"
+    if status in _TRANSIENT_STATUS or status >= 500:
+        return "transient"
+    # 404, 410, 403 and every other 4xx: the server answered and said no on purpose. Retrying
+    # a 403 three times is how a source used to spend six minutes being refused three times.
+    return "permanent"
+
+
+def is_page_content_type(content_type: str | None) -> bool:
+    """Is this a response worth parsing as a web page?"""
+    if not content_type:
+        return True
+    return content_type.split(";", 1)[0].strip().lower() in _PAGE_TYPES
+
+
+def classify_exception(exc: BaseException) -> FetchKind:
+    """A transport failure -> transient / permanent. Not every exception is worth a retry.
+
+    Transient: timeouts, and the network and proxy failures Tor produces constantly — a
+    rendezvous circuit that would not build ("TTL expired"), a service that is momentarily
+    unreachable, a connection reset mid-read.
+    Permanent: a URL that is malformed or not http(s), a redirect loop, a body that cannot be
+    decoded, and anything unrecognised — an unknown error repeated three times is still an
+    unknown error, and retrying it only hides the bug.
+    """
+    if isinstance(exc, (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.TooManyRedirects)):
+        return "permanent"
+    if isinstance(exc, (httpx.LocalProtocolError, httpx.DecodingError)):
+        return "permanent"
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.ProxyError)):
+        return "transient"
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return "transient"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return "transient"
+    return "permanent"

@@ -1,5 +1,10 @@
 """arq worker: scheduled crawls, on-demand crawls, enrichment and indicator feeds.
 
+The crawl jobs hand off to the crawl cycle manager (`intel.crawl`) when `CRAWL_ENGINE=queue`
+(the default) and to the original source-at-a-time crawler when it is `legacy`. arq is only
+the clock here: it decides *when* to look, the manager decides what is due, and Postgres
+holds the queue and the coordination.
+
 * Crawls run on a schedule — each source on its own interval.
 * `drain_crawl_requests` picks up what the UI's Sync button queued, within seconds.
 * The enrichment sweep and the feed fetches run on their own crons, off the crawl lock:
@@ -17,6 +22,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from .config import get_settings
+from .crawl.manager import CycleManager, RunOutcome
 from .enrich import enrich_client
 from .enrich_sweep import sweep_domains
 from .feeds import (
@@ -50,7 +56,134 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     log.info("worker stopped")
 
 
+def _manager(ctx: dict[str, Any]) -> CycleManager:
+    """The cycle manager for this tick.
+
+    `crawl_collectors` and `crawl_ingest_storage` in the context are seams for tests, which
+    substitute a scripted network and a recording ingest; a running worker sets neither.
+    """
+    return CycleManager(
+        ctx["storage"],
+        ctx["settings"],
+        collectors=ctx.get("crawl_collectors"),
+        ingest_storage=ctx.get("crawl_ingest_storage"),
+    )
+
+
+def _cycle_result(outcome: RunOutcome | None) -> dict[str, int | str]:
+    if outcome is None:
+        return {"skipped": "another crawl is already running"}
+    if outcome.discarded:
+        return {"skipped": "nothing is due"}
+    return {
+        "cycle": outcome.cycle_id,
+        "status": outcome.status,
+        "sources": outcome.sources_attempted,
+        "urls": outcome.urls,
+        "new": outcome.leaks_found,
+        "seen_again": outcome.leaks_updated,
+        "failed": len(outcome.failed_sources),
+    }
+
+
 async def crawl_all(ctx: dict[str, Any]) -> dict[str, int | str]:
+    """Crawl every enabled source now, whether or not it is due. Manual "sync everything"."""
+    if ctx["settings"].engine == "legacy":
+        return await _legacy_crawl_all(ctx)
+    return _cycle_result(await _manager(ctx).run("manual", force=True))
+
+
+async def crawl_due(ctx: dict[str, Any]) -> dict[str, int | str]:
+    """The scheduled sweep: start (or join) a cycle covering whatever has come due.
+
+    The cron fires every `CRAWL_SWEEP_INTERVAL_MINUTES`. Firing is cheap: if nothing is due
+    the manager starts nothing, and what *is* due is decided per URL from its own
+    `next_crawl_at`, not by this clock. If a cycle is already running this tick joins it as
+    extra workers, which adds no concurrency (the limit is enforced in the database) but means
+    the cycle keeps moving if the process that started it has died.
+    """
+    if ctx["settings"].engine == "legacy":
+        return await _legacy_crawl_due(ctx)
+    return _cycle_result(await _manager(ctx).run("schedule"))
+
+
+def _request_result(outcome: RunOutcome) -> tuple[str, str | None]:
+    """A cycle's outcome as a `crawl_requests` status, in the vocabulary the UI already reads."""
+    if outcome.sources_attempted == 0:
+        return "skipped", "no enabled sources matched this request"
+    if outcome.status == "failed":
+        return "failed", f"every source failed: {', '.join(outcome.failed_sources[:5])}"
+    if outcome.status != "completed":
+        return "failed", f"the crawl cycle ended as {outcome.status}"
+    return "succeeded", None
+
+
+async def drain_crawl_requests(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Run whatever the UI's Sync button queued.
+
+    A request never makes a cycle of its own when one is already running: it is attached to
+    that cycle (its sources are queued into it) and answered when the cycle finishes. If a
+    cycle cannot start at all because `intel run` holds the legacy lock, the request goes back
+    to the queue untouched and is picked up on a later tick.
+    """
+    settings = ctx["settings"]
+    if settings.engine == "legacy":
+        return await _legacy_drain_crawl_requests(ctx)
+
+    storage: Storage = ctx["storage"]
+
+    # A worker killed mid-crawl leaves rows at 'running' forever; see the legacy drain.
+    expired_requests = await storage.expire_stale_crawl_requests(settings.job_timeout_seconds)
+    expired_runs = await storage.expire_stale_crawl_runs(settings.job_timeout_seconds)
+    if expired_requests or expired_runs:
+        log.warning(
+            "expired abandoned crawl records", requests=expired_requests, runs=expired_runs
+        )
+
+    manager = _manager(ctx)
+    handled: list[dict[str, Any]] = []
+
+    while (request := await storage.claim_crawl_request()) is not None:
+        log.info(
+            "crawl requested",
+            request=request.id,
+            source=request.source_slug or "all enabled",
+            by=request.requested_by,
+        )
+        try:
+            outcome = await manager.run(
+                "manual",
+                request_id=request.id,
+                slugs=[request.source_slug] if request.source_slug else None,
+                force=True,
+                wait=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad request must not kill the tick
+            log.exception("requested crawl failed", request=request.id)
+            await storage.finish_crawl_request(request.id, status="failed", error=str(exc))
+            handled.append({"id": request.id, "status": "failed"})
+            continue
+
+        if outcome is None:
+            await storage.requeue_crawl_request(request.id)
+            return {"skipped": "another crawl is already running", "handled": len(handled)}
+
+        status, error = _request_result(outcome)
+        await storage.finish_crawl_request(
+            request.id,
+            status=status,
+            sources_crawled=outcome.sources_attempted,
+            new_leaks=outcome.leaks_found,
+            updated_leaks=outcome.leaks_updated,
+            failed_sources=len(outcome.failed_sources),
+            error=error,
+        )
+        handled.append({"id": request.id, "status": status, "cycle": outcome.cycle_id})
+
+    return {"handled": len(handled), "requests": handled}
+
+
+async def _legacy_crawl_all(ctx: dict[str, Any]) -> dict[str, int | str]:
     """Crawl every enabled source, ignoring their intervals. Manual "sync everything".
 
     Takes the crawl lock, so a run that overlaps a manual `intel run` steps aside instead of
@@ -67,7 +200,7 @@ async def crawl_all(ctx: dict[str, Any]) -> dict[str, int | str]:
     }
 
 
-async def crawl_due(ctx: dict[str, Any]) -> dict[str, int | str]:
+async def _legacy_crawl_due(ctx: dict[str, Any]) -> dict[str, int | str]:
     """The scheduled sweep: crawl only the sources whose own interval has elapsed.
 
     This is the job the cron below runs. Each source refreshes on its own
@@ -89,7 +222,7 @@ async def crawl_due(ctx: dict[str, Any]) -> dict[str, int | str]:
     }
 
 
-async def drain_crawl_requests(ctx: dict[str, Any]) -> dict[str, Any]:
+async def _legacy_drain_crawl_requests(ctx: dict[str, Any]) -> dict[str, Any]:
     """Run whatever the UI's Sync button queued.
 
     The API cannot enqueue an arq job — arq pickles its payloads and the API is TypeScript —
@@ -402,6 +535,16 @@ def _report_row(report: ScamReport) -> dict[str, Any]:
 
 
 async def crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
+    """Crawl a single source now. Enqueued ad hoc."""
+    if ctx["settings"].engine == "legacy":
+        return await _legacy_crawl_one(ctx, slug)
+    source = await ctx["storage"].get_source(slug)
+    if source is None:
+        return {"error": f"no source {slug!r}"}
+    return _cycle_result(await _manager(ctx).run("manual", slugs=[slug], force=True))
+
+
+async def _legacy_crawl_one(ctx: dict[str, Any], slug: str) -> dict[str, Any]:
     """Crawl a single source. Enqueued ad hoc, or by a per-source schedule."""
     storage: Storage = ctx["storage"]
     source = await storage.get_source(slug)
@@ -428,7 +571,16 @@ _DRAIN_SECONDS = {0, 10, 20, 30, 40, 50}
 # Minutes on which the due-source sweep fires. Every 5 minutes, offset off the hour so it
 # does not collide with every other cron on the box. The sweep itself is cheap when nothing
 # is due; what it costs is decided by the sources' own intervals, not by this number.
-_SWEEP_MINUTES = {2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}
+def sweep_minutes(interval: int) -> set[int]:
+    """Minutes of the hour on which the sweep fires, `interval` apart, starting at :02.
+
+    Offset off the hour so it does not collide with the other crons. With the default 5 this
+    is the same set as ever: {2, 7, 12, ... 57}.
+    """
+    return {m % 60 for m in range(2, 62, max(1, interval))}
+
+
+_SWEEP_MINUTES = sweep_minutes(_settings.sweep_interval_minutes)
 
 
 class WorkerSettings:

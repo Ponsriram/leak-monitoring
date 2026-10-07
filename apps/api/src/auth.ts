@@ -57,5 +57,3 @@ export const auth = betterAuth({
 
   trustedOrigins: appConfig.CORS_ORIGINS,
 });
-
-export type AuthSession = typeof auth.$Infer.Session;

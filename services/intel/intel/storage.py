@@ -120,6 +120,11 @@ class Storage:
     async def close(self) -> None:
         await self._pool.close()
 
+    @property
+    def pool(self) -> asyncpg.Pool:
+        """The connection pool, for the crawl queue, which shares it rather than opening its own."""
+        return self._pool
+
     # ---------- run lock ----------
 
     @asynccontextmanager
@@ -327,19 +332,27 @@ class Storage:
     ) -> tuple[int, bool]:
         """Store a fetched page. Returns (raw_page_id, changed).
 
-        `changed` is False when this exact content has been seen for this source before —
-        the caller then skips extraction entirely. This is what turns "reprocess the whole
-        corpus every run" into "only handle what actually changed".
+        `changed` is False when this exact content has been seen *and extracted* for this
+        source before — the caller then skips extraction entirely. This is what turns
+        "reprocess the whole corpus every run" into "only handle what actually changed".
         """
         digest = content_hash(text)
 
-        existing = await self._pool.fetchval(
-            "select id from raw_pages where source_id = $1 and content_sha256 = $2 limit 1",
+        existing = await self._pool.fetchrow(
+            """
+            select id, extracted_at is not null as extracted
+              from raw_pages where source_id = $1 and content_sha256 = $2
+             order by extracted_at is not null desc limit 1
+            """,
             source_id,
             digest,
         )
         if existing is not None:
-            return existing, False
+            # Only a page that was actually extracted counts as seen. The row is written
+            # *before* extraction, so a crash or an extractor error in between leaves a stored
+            # page that was never processed; treating its hash as "already handled" would make
+            # the retry skip exactly the work that failed.
+            return existing["id"], not existing["extracted"]
 
         page_id = await self._pool.fetchval(
             """
@@ -846,6 +859,18 @@ class Storage:
             updated_leaks,
             failed_sources,
             (error or None) and error[:1000],
+        )
+
+    async def requeue_crawl_request(self, request_id: int) -> None:
+        """Put a claimed request back in the queue, untouched.
+
+        For a request that was claimed but could not start because another crawl holds the
+        database lock. It must wait its turn, not be marked failed for someone else's crawl.
+        """
+        await self._pool.execute(
+            "update crawl_requests set status = 'queued', started_at = null "
+            "where id = $1 and status = 'running'",
+            request_id,
         )
 
     async def expire_stale_crawl_requests(self, older_than_seconds: int) -> int:

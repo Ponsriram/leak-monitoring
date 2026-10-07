@@ -112,18 +112,24 @@ with raw SQL but never migrates them.
 | Path | Purpose |
 |---|---|
 | `intel/cli.py` | `intel run / status / sources / extract-file / backfill-descriptions` |
-| `intel/pipeline.py` | fetch → hash → parse → extract → dedupe → upsert |
-| `intel/collectors/` | `tor_http.py` (async httpx), `tor_browser.py` (Playwright) |
+| `intel/crawl/manager.py` | **The cycle manager**: starts, joins, seeds, serves and finalizes a crawl cycle |
+| `intel/crawl/queue.py` | Every SQL statement of the URL queue: claim, lease, retry, prune, discover, finalize |
+| `intel/crawl/worker.py` | The claim loops; turns a fetch outcome into a queue transition |
+| `intel/crawl/fetch.py` | One URL: single fetch attempt, content checks, SHA-256 compare, then `ingest_page` |
+| `intel/crawl/seeding.py`, `frontier.py` | Eager pagination seeding; URL normalization, allowlist, what ends a listing |
+| `intel/crawl/report.py` | Per-source verdicts, cycle status, the end-of-cycle report |
+| `intel/pipeline.py` | `ingest_page` (store + extract, shared by both crawlers) and the legacy source-at-a-time crawler |
+| `intel/collectors/` | `tor_http.py` (async httpx, streamed and size-capped), `tor_browser.py` (Playwright); both return a classified `FetchResult` |
 | `intel/extract/linker.py` | **Spans → discrete leaks.** The core logic. |
 | `intel/extract/rules.py` | The extractor: patterns and word lists, no ML. |
 | `intel/extract/normalize.py` | Dates → `timestamptz`, `"1.2 TB"` → bytes |
 | `intel/extract/gazetteer.py` | Country and sector lookup — fills `victim_country` / `victim_sector` |
 | `intel/extract/describe.py` | Each listing's summary text, and its incident types |
 | `intel/enrich_sweep.py` | Background WHOIS/DNS/status for victim domains; WHOIS-only for IOC hosts |
-| `intel/scheduling.py` | Page waves: which pages a crawl fetches together |
+| `intel/scheduling.py` | Legacy crawler only: page waves and per-source time budgets |
 | `intel/models.py` | Pydantic `ExtractedLeak` — validates everything |
 | `intel/storage.py` | The only module that speaks SQL |
-| `intel/tasks.py` | arq worker: due-source sweep, request drain, enrichment, feeds |
+| `intel/tasks.py` | arq worker: the cron that starts cycles, the Sync request drain, enrichment, feeds |
 | `intel/feeds/` | Public feeds: URLhaus, ThreatFox, TweetFeed (-> `iocs`), ransomware.live (-> `leaks`), scam-number reports (-> `mobile_numbers`) |
 | `intel/extract/phones.py` | Phone-number regex, libphonenumber validation, threat-type / audience classification |
 | `intel/extract/secrets.py` | Finds credentials, API keys, password hashes and card numbers; returns masked previews and keyed fingerprints, never stores the value |
@@ -134,11 +140,11 @@ with raw SQL but never migrates them.
 ## How a leak reaches the dashboard
 
 ```
-1. SCHEDULE    every 5 min: crawl the sources whose crawl_interval_seconds has elapsed
+1. SCHEDULE    every CRAWL_SWEEP_INTERVAL_MINUTES (5): start a crawl cycle if any URL is due
                  └── or a person clicks Sync, which writes a crawl_requests row that the
-                     worker's 10-second drain picks up
-2. FETCH       pages are fetched in doubling waves — 1, then 4, then 8 … — until one
-               comes back empty. O(log P) round trips over Tor instead of O(P).
+                     worker's 10-second drain attaches to the running (or a new) cycle
+2. FETCH       workers claim ONE URL at a time from crawl_urls and make one attempt over
+               Tor; transient failures go back to the queue with a delay (see "Crawl cycles")
 3. HASH        sha256 of the cleaned text
                  └── seen this hash before? STOP. Nothing downstream runs.
 4. PARSE       selectolax → clean text
@@ -153,7 +159,8 @@ with raw SQL but never migrates them.
 10. SERVE      API queries indexed columns; dashboard polls every 60s
 ```
 
-**Step 2 is where the wall-clock time went.** Pages used to be walked one at a time with a
+**Step 2 is where the wall-clock time went** (in the legacy crawler; see "Crawl cycles" below for
+the queue engine). Pages used to be walked one at a time with a
 politeness sleep between each, so a ten-page listing cost ten sequential Tor round trips at
 20-30 seconds apiece however many sources ran in parallel. Galloping waves reach the end of
 a P-page listing in about log2(P) rounds and never request more than roughly 2P pages,
@@ -165,6 +172,51 @@ is the run-wide ceiling that stops per-source and per-page concurrency multiplyi
 **Step 9 is what makes the system correct.** The unique constraint on `dedupe_hash` is why
 re-running never duplicates. `first_seen_at` is written once and never updated, which is what
 makes "what's new since yesterday" answerable at all.
+
+### Crawl cycles: the URL is the unit of work
+
+With `CRAWL_ENGINE=queue` (the default) collection runs as **cycles** over a URL queue in Postgres
+(`crawl_urls`), not source by source. The legacy source-at-a-time crawler remains behind
+`CRAWL_ENGINE=legacy` and is what the `intel run` CLI always uses.
+
+```
+arq cron (every CRAWL_SWEEP_INTERVAL_MINUTES)  or  a Sync request
+        |                                  only decides WHEN; it never fetches
+   CycleManager.run()   -- one running cycle at a time (unique index), across all processes
+        |  seed what is due: listing pages, followed pages whose interval has elapsed
+   crawl_urls (queued / running / retry / succeeded / failed / skipped)
+        |  workers claim ONE URL at a time: FOR UPDATE SKIP LOCKED + a lease
+   fetch (one attempt) -> clean text -> SHA-256 -> unchanged? skip : ingest_page() (existing extractor)
+        |  transient failure -> back to the queue with a delay; the worker moves on
+   finalize (atomic): crawl_runs per source, sources health, crawl_cycles + report
+```
+
+- **Concurrency is system-wide.** `CRAWL_WORKERS` is enforced in the database at claim time, so three
+  worker processes share one limit instead of tripling it. It is not derived from the number of Tor
+  SOCKS ports (one Tor process; the ports add no throughput).
+- **Retries never hold a worker.** A transient failure (timeout, 5xx, 429, Tor circuit) becomes a
+  `retry` row due after a backoff; permanent ones (404/410/403, gate pages, files) are not retried.
+- **Leases make a crashed worker harmless.** An expired lease is recovered by the reaper; a cycle is
+  never finalized while any URL is still queued, running or waiting to retry.
+- **Pagination is declared, so every page is queued up front** (`seeding.py`): `max_pages` the first
+  time, then `min(max_pages, deepest page seen + 2)`. Page 1 gates the rest (`CRAWL_PAGE1_FIRST`), and
+  an empty page, a 404/410, or a failed page 1 skips the pages behind it. A timeout or a 5xx never
+  does: only evidence of an end prunes.
+- **Link following** (`CRAWL_FOLLOW_LINKS`): from a page whose content is new or changed, up to
+  `CRAWL_LINKS_PER_PAGE` new same-host links, `CRAWL_LINK_DEPTH` deep, `CRAWL_LINK_MAX_PAGES` per source
+  per cycle; never a file, an account page, another host or an internal address. Followed pages are
+  stored and scanned for exposures but not run through the listing extractor. They are recrawled when
+  `CRAWL_LINK_INTERVAL` (a week) has elapsed, without their listing having to change.
+- **Reporting** reuses existing tables: `crawl_runs` per source (what the Sources page reads), and
+  `crawl_cycles` with a stored `summary` (sources, URL outcomes, retries, links, HTTP and error
+  histograms). The Sync button's `crawl_requests` lifecycle is unchanged.
+
+The cycle's per-source verdict mirrors the old meaning: **a source fails exactly when its page 1
+fails**. A cycle is `failed` only when nothing worked; a source down while others succeed is
+`completed`, with the failure named in the report.
+
+The older time-budget settings (`CRAWL_RUN_WINDOW`, `CRAWL_SOURCE_*_BUDGET`) and doubling page waves
+belong to the legacy crawler only.
 
 ### Why the API cannot start a crawl itself
 
@@ -319,10 +371,25 @@ victim's own name. Both are therefore null for a large share of rows, and both a
 enough signal to filter on but not a claim to cite. The UI renders them as outlined chips
 rather than solid ones for exactly that reason.
 
-**Speculative page fetches.** A doubling wave cannot know a listing has ended until a page
-comes back empty, so the wave containing the end always over-fetches. `intel run` reports the
-count; lower `CRAWL_PAGE_CONCURRENCY` for sources that are much shallower than their
-`max_pages`.
+**Speculative page fetches (legacy crawler).** A doubling wave cannot know a listing has ended
+until a page comes back empty, so the wave containing the end always over-fetches. `intel run`
+reports the count; lower `CRAWL_PAGE_CONCURRENCY` for sources much shallower than `max_pages`.
+The queue engine instead queues a source's declared pages up front and prunes the ones behind an
+empty page or a 404.
+
+**No source paginates today.** Every source in `sources.yaml` declares `pagination_style: none`,
+so eager pagination is dormant until one declares `query`, `path` or `offset`. Link following is
+what grows the frontier in practice.
+
+**The queue engine does not fail over to mirrors.** It records onion addresses a page announces
+(`CRAWL_DISCOVER_MIRRORS`) but never switches to one; `CRAWL_MIRROR_FAILOVER` affects only the
+legacy crawler. An operator can promote one with `intel mirrors use`.
+
+**Followed pages are not extracted for leaks.** They are stored and scanned for exposures, but a
+victim's own page is not run through the listing extractor.
+
+**Out-of-range pages that repeat page 1** (some sites do this) are not detected as the end of a
+listing; they read as unchanged duplicates.
 
 **Sources decay.** Leak sites rotate addresses, get seized, or put a DDoS queue in front of
 the listing. `consecutive_failures` surfaces this on the Sources page.

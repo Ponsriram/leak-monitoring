@@ -85,6 +85,20 @@
       "when": 1791127899629,
       "tag": "0011_exposures_and_watchlist",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791315371424,
+      "tag": "0012_crawl_cycles_and_urls",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791318251645,
+      "tag": "0013_crawl_cycle_report",
+      "breakpoints": true
     }
   ]
 }

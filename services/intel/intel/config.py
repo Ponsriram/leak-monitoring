@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -57,8 +58,64 @@ class Settings(BaseSettings):
     # takes this long to rebuild, and a shorter wait retries on the path that just failed.
     retry_backoff_seconds: int = Field(default=15, alias="CRAWL_RETRY_BACKOFF")
     retry_backoff_cap_seconds: int = Field(default=120, alias="CRAWL_RETRY_BACKOFF_CAP")
-    # How many sources to crawl at once.
+    # LEGACY: how many sources the old source-at-a-time crawler (`intel.pipeline.run_pipeline`,
+    # used by `intel run`) works on at once. It means nothing to the URL-queue crawler below,
+    # which is governed by CRAWL_WORKERS. Kept only until the CLI moves to crawl cycles.
     concurrency: int = Field(default=4, alias="CRAWL_CONCURRENCY")
+
+    # Which crawler the scheduled and on-demand jobs use. `queue` is the URL-queue crawler
+    # (`intel.crawl`): cycles, a Postgres frontier, concurrent workers. `legacy` is the
+    # source-at-a-time crawler it replaces, kept as a switch-back that needs no redeploy of
+    # code. The `intel run` CLI always uses the legacy crawler either way.
+    engine: Literal["queue", "legacy"] = Field(default="queue", alias="CRAWL_ENGINE")
+    # How often the cron looks for due work, in minutes. Nothing is fetched at this rate: a
+    # tick only starts a cycle if some URL is due, and each URL has its own interval.
+    sweep_interval_minutes: int = Field(
+        default=5, ge=1, le=60, alias="CRAWL_SWEEP_INTERVAL_MINUTES"
+    )
+
+    # --- URL-queue crawler (`intel.crawl`) ---
+    # The unit of work is a URL, not a source. These three numbers are SYSTEM-WIDE limits,
+    # enforced in Postgres at claim time, not per process: running three worker processes
+    # with CRAWL_WORKERS=6 still means at most 6 HTTP fetches in flight in total. Each process
+    # runs enough claim loops to reach the limit and no more; the database is what says no.
+    #
+    # Deliberately not derived from the number of Tor SOCKS ports. All the ports belong to one
+    # Tor process, so they separate circuit pools but add no throughput. Tune these from the
+    # logged response times and failure rate, and from the Raspberry Pi's real memory.
+    #
+    # Simultaneous fetches of http-collector sources, across every worker process.
+    workers: int = Field(default=6, ge=1, alias="CRAWL_WORKERS")
+    # Simultaneous fetches of browser-collector sources. Firefox is ~500MB resident, so this
+    # is bounded by RAM rather than by Tor.
+    browser_workers: int = Field(default=1, ge=0, alias="CRAWL_BROWSER_WORKERS")
+    # Simultaneous fetches of any ONE source, so a deep listing cannot take every slot and
+    # lean on a single onion service.
+    per_source_inflight: int = Field(default=3, ge=1, alias="CRAWL_PER_SOURCE_INFLIGHT")
+    # Largest response body that is read. A body past this is abandoned mid-stream and the
+    # URL fails permanently: leak-site listings are a few hundred KB, so anything near this
+    # size is a file, not a page, and reading it only spends memory and Tor bandwidth.
+    max_bytes: int = Field(default=5 * 1024 * 1024, alias="CRAWL_MAX_BYTES")
+    # Hold a source's listing pages 2..N until page 1 of the same cycle has been resolved.
+    # They are all queued up front either way; this only decides when they may be claimed.
+    # On, a dead or gated source costs one failed page instead of N. Off, every page of every
+    # source is attempted at once.
+    page1_first: bool = Field(default=True, alias="CRAWL_PAGE1_FIRST")
+    # Attempts per URL per cycle. A transient failure becomes a `retry` row with a backoff
+    # time; the worker slot is released at once rather than slept on.
+    max_attempts: int = Field(default=3, ge=1, alias="CRAWL_MAX_ATTEMPTS")
+    # How long a claimed URL stays leased. Twice the request timeout by default (see
+    # `lease_seconds`); a worker that dies mid-fetch is recovered when this runs out.
+    lease_override_seconds: int = Field(default=0, alias="CRAWL_LEASE_SECONDS")
+    # How long before a page reached by following a link is fetched again. A week: they are
+    # one-off pages behind a listing entry, and are refetched sooner only when their parent
+    # listing changes. Listing pages use each source's own intervals (`crawl_interval_seconds`
+    # for page 1, `deep_crawl_interval_seconds` for the rest).
+    link_recrawl_seconds: int = Field(default=604800, alias="CRAWL_LINK_INTERVAL")
+    # Followed pages that have come due again, taken back into a cycle per source. Separate
+    # from `link_max_pages`, which bounds links found for the first time, so a backlog of
+    # recrawls cannot crowd out discovery of new victims.
+    link_recrawl_max_pages: int = Field(default=25, alias="CRAWL_LINK_RECRAWL_MAX_PAGES")
 
     # How many pages of ONE source may be in flight together, so a ten-page listing does not
     # cost ten sequential Tor round trips. See `intel.scheduling.page_waves`.
@@ -71,6 +128,31 @@ class Settings(BaseSettings):
     # multiplicatively (4 sources x 16-page waves = 64 simultaneous circuits) and Tor
     # becomes the bottleneck for every one of them. 0 means "derive it".
     max_inflight_fetches: int = Field(default=0, alias="CRAWL_MAX_INFLIGHT")
+
+    # --- fair scheduling ---
+    # The wall-clock window one run aims to finish inside, however many sources are due. Each
+    # source is given `window * concurrency / sources` seconds (see
+    # `intel.scheduling.source_time_budget`), so 10 sources and 100 sources both fit.
+    run_window_seconds: int = Field(default=1800, alias="CRAWL_RUN_WINDOW")
+    # What one source needs to answer page 1 over Tor at all. The per-source share never goes
+    # below this; if that means the run overruns its window the pipeline says so.
+    source_min_budget_seconds: int = Field(default=90, alias="CRAWL_SOURCE_MIN_BUDGET")
+    # Upper bound on one source's share, so a run with few sources does not let one of them
+    # dig for the whole window.
+    source_max_budget_seconds: int = Field(default=900, alias="CRAWL_SOURCE_MAX_BUDGET")
+
+    # --- link following (the "tree" of a leak site) ---
+    # After a deep walk, follow links from the listing into the pages behind it — victim
+    # pages, proof pages — looking for exposures and new mirrors. Same host only, and never
+    # a file (see `collectors/links.py`).
+    follow_links: bool = Field(default=True, alias="CRAWL_FOLLOW_LINKS")
+    # How many levels down the tree to go. 3 reaches listing -> victim page -> its sub-pages.
+    link_depth: int = Field(default=3, alias="CRAWL_LINK_DEPTH")
+    # How many links to take from each page. Bounds the fan-out at every level.
+    links_per_page: int = Field(default=5, alias="CRAWL_LINKS_PER_PAGE")
+    # Hard cap on followed pages per source per crawl. Depth and fan-out alone allow
+    # 5 + 25 + 125 pages; this is what stops a big site becoming a hundred Tor fetches.
+    link_max_pages: int = Field(default=25, alias="CRAWL_LINK_MAX_PAGES")
 
     # How long a full scheduled run may take. The default was arq's 300s, which is far less
     # than the ~15 minutes 32 sources need, so every scheduled crawl was killed mid-run and
@@ -162,6 +244,13 @@ class Settings(BaseSettings):
     sources_file: Path = Field(default=SERVICE_ROOT / "sources.yaml", alias="INTEL_SOURCES")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    @property
+    def lease_seconds(self) -> int:
+        """How long a claimed URL is leased before the reaper may take it back."""
+        if self.lease_override_seconds > 0:
+            return self.lease_override_seconds
+        return max(30, self.request_timeout_seconds * 2)
 
     @property
     def fetch_budget(self) -> int:

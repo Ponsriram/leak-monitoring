@@ -11,15 +11,24 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Protocol
 
 import structlog
 
-from .collectors import classify_onion_urls, get_collector, onion_host, page_url, to_text
+from .collectors import (
+    classify_onion_urls,
+    extract_links,
+    get_collector,
+    normalize_url,
+    onion_host,
+    page_url,
+    to_text,
+)
 from .config import Settings
 from .extract import get_extractor, link_spans
 from .extract.secrets import find_exposures
 from .models import ExtractedLeak
-from .scheduling import page_waves
+from .scheduling import page_waves, source_time_budget
 from .storage import SourceRow, Storage, UpsertResult
 
 log = structlog.get_logger(__name__)
@@ -75,6 +84,10 @@ class SourceResult:
     # of not knowing where a listing ends until you have asked; watch it to tune
     # CRAWL_PAGE_CONCURRENCY against a source's real depth.
     pages_discarded: int = 0
+    # Pages reached by following links out of the listing (already counted in
+    # `pages_fetched`), and whether the source's time budget cut the crawl short.
+    link_pages: int = 0
+    truncated: bool = False
 
 
 @dataclass(slots=True)
@@ -120,6 +133,7 @@ async def crawl_source(
     extractor_name: str | None = None,
     fetch_slots: asyncio.Semaphore | None = None,
     depth: str | None = None,
+    time_budget: float | None = None,
 ) -> SourceResult:
     """Crawl one source end to end. Never raises — failures are recorded, not propagated.
 
@@ -131,8 +145,21 @@ async def crawl_source(
     since a page fetch over Tor is tens of seconds and everything downstream of it is
     milliseconds. `fetch_slots` is the run-wide budget on simultaneous fetches; pass the one
     `run_pipeline` builds so pages and sources share a ceiling instead of multiplying.
+
+    `time_budget` is this source's share of the run's window, in seconds. It is a soft
+    deadline checked between waves and tree levels, never a cancellation: a crawl that runs
+    out of time stops cleanly with what it has, instead of being killed mid-write.
+
+    On a deep walk, links found on changed listing pages are followed (see `follow_links`
+    below) — the listing is only the top of a leak site's tree.
     """
     result = SourceResult(slug=source.slug)
+    started = asyncio.get_running_loop().time()
+
+    def out_of_time() -> bool:
+        if time_budget is None:
+            return False
+        return asyncio.get_running_loop().time() - started >= time_budget
 
     # `depth` is normally decided by the source's own deep-walk schedule. An explicit value
     # is how the CLI forces a full walk on demand.
@@ -185,6 +212,10 @@ async def crawl_source(
         )
         return [page for page in fetched if page is not None]
 
+    # Changed listing pages whose links are worth following, as (url, html).
+    seeds: list[tuple[str, str]] = []
+    follow = settings.follow_links and crawl_kind == "deep"
+
     async def process(page: _Page) -> bool:
         """Fold one fetched page into the result. False means the listing ended here."""
         if page.html is None:
@@ -211,7 +242,9 @@ async def crawl_source(
             # human check would read as healthy while collecting nothing. Passing the gate
             # is not something this crawler does.
             result.status = "failed"
-            result.error = f"page 1 is a {gate} page, not a listing — the site gates automated access"
+            result.error = (
+                f"page 1 is a {gate} page, not a listing — the site gates automated access"
+            )
             log.info("gate page, stopping", source=source.slug, gate=gate)
             return False
 
@@ -229,55 +262,126 @@ async def crawl_source(
             log.info("page empty, stopping", source=source.slug, page=page.page_no)
             return False
 
-        page_id, changed = await storage.save_page(
-            source_id=source.id,
-            crawl_run_id=run_id,
+        ingested = await ingest_page(
+            storage=storage,
+            settings=settings,
+            source=source,
+            extractor=extractor,
+            run_id=run_id,
             url=page.url,
             page_no=page.page_no,
             text=text,
         )
 
-        if not changed:
+        if not ingested.changed:
             # The content hash already exists for this source: nothing new here, and
             # nothing downstream needs to run. This is the short circuit that makes
             # repeat crawls cheap.
-            log.debug(
-                "page unchanged, skipping extraction", source=source.slug, page=page.page_no
-            )
+            log.debug("page unchanged, skipping extraction", source=source.slug, page=page.page_no)
             return True
 
         result.pages_changed += 1
+        if follow:
+            seeds.append((page.url, page.html))
 
-        leaks = extract_page(
-            text,
-            source_group=source.slug,
-            source_url=page.url,
-            page_no=page.page_no,
-            extractor_name=extractor.name,
-            extractor=extractor,
-        )
-        upserted = await storage.upsert_leaks(leaks, source_id=source.id)
+        upserted = ingested.upserted
         result.leaks.inserted += upserted.inserted
         result.leaks.updated += upserted.updated
         result.leaks.skipped += upserted.skipped
         result.leaks.new_leak_ids.extend(upserted.new_leak_ids)
+        return True
 
-        await storage.mark_extracted(page_id)
+    async def follow_links(seed_pages: list[tuple[str, str]]) -> None:
+        """Breadth-first walk down the tree behind the listing.
 
-        if settings.exposure_detection:
-            await _record_exposures(
-                text, source=source, storage=storage, settings=settings, url=page.url
+        Level 1 is the links on the listing pages, level 2 the links on those, and so on to
+        `link_depth`. Three things keep this bounded, and all three are needed: at most
+        `links_per_page` links are taken from any page, at most `link_max_pages` pages are
+        fetched in total, and the source's time budget is checked before every level. Each
+        page is fetched once however many pages link to it.
+
+        A followed page is stored and searched for exposures and onion addresses, like a
+        listing page, but it is not run through the listing extractor — a victim's own page
+        is not a list of victims.
+        """
+        visited = {normalize_url(url) for url, _ in seed_pages}
+        remaining = settings.link_max_pages
+        level = seed_pages
+
+        async def fetch_link(index: int, url: str) -> _Page:
+            if stagger > 0:
+                await asyncio.sleep(stagger * index)
+            async with slots:
+                return _Page(0, url, await collector.fetch(url))
+
+        for depth_no in range(1, settings.link_depth + 1):
+            if remaining <= 0:
+                break
+            if out_of_time():
+                result.truncated = True
+                log.warning("time budget spent, stopping link walk", source=source.slug)
+                break
+
+            targets: list[str] = []
+            for url, html in level:
+                for link in extract_links(
+                    html, url, visited=visited, limit=settings.links_per_page
+                ):
+                    visited.add(normalize_url(link))
+                    targets.append(link)
+            targets = targets[:remaining]
+            if not targets:
+                break
+
+            fetched = await asyncio.gather(
+                *(fetch_link(index, url) for index, url in enumerate(targets))
             )
 
-        log.info(
-            "page processed",
-            source=source.slug,
-            page=page.page_no,
-            found=len(leaks),
-            new=upserted.inserted,
-            seen_again=upserted.updated,
-        )
-        return True
+            level = []
+            for page in fetched:
+                if page.html is None:
+                    continue
+                remaining -= 1
+                result.pages_fetched += 1
+                result.link_pages += 1
+                result.bytes_fetched += len(page.html.encode("utf-8"))
+
+                text = to_text(page.html)
+                if settings.discover_mirrors:
+                    result.mirrors_found += await _record_mirrors(
+                        text,
+                        source=source,
+                        storage=storage,
+                        url=page.url,
+                        known_hosts=known_hosts,
+                    )
+                if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
+                    continue
+
+                page_id, changed = await storage.save_page(
+                    source_id=source.id,
+                    crawl_run_id=run_id,
+                    url=page.url,
+                    page_no=depth_no,
+                    text=text,
+                )
+                if not changed:
+                    continue
+                result.pages_changed += 1
+                await storage.mark_extracted(page_id)
+                if settings.exposure_detection:
+                    await _record_exposures(
+                        text, source=source, storage=storage, settings=settings, url=page.url
+                    )
+                level.append((page.url, page.html))
+
+            log.info(
+                "link level done",
+                source=source.slug,
+                level=depth_no,
+                fetched=len(fetched),
+                followable=len(level),
+            )
 
     try:
         waves = page_waves(effective_max_pages, width=width, cap=settings.page_wave_cap)
@@ -314,7 +418,8 @@ async def crawl_source(
             return result
 
         batch = [first]
-        while True:
+        listing_ended = False
+        while not listing_ended:
             for index, page in enumerate(batch):
                 if not await process(page):
                     # Everything after the terminal page in this wave was fetched
@@ -323,14 +428,24 @@ async def crawl_source(
                     # listing" is the rule the sequential crawler enforced, and page
                     # numbering downstream assumes it.
                     result.pages_discarded += len(batch) - index - 1
-                    return result
+                    listing_ended = True
+                    break
+            if listing_ended:
+                break
 
             wave = next(waves, None)
             if wave is None:
                 break
+            if out_of_time():
+                result.truncated = True
+                log.warning("time budget spent, stopping listing", source=source.slug)
+                break
             batch = await fetch_wave(wave, crawl_base)
             if not batch:
                 break
+
+        if result.status == "succeeded" and seeds:
+            await follow_links(seeds)
 
     except asyncio.CancelledError:
         # Cancellation is NOT an Exception subclass, so without this it would fall straight
@@ -357,7 +472,9 @@ async def crawl_source(
                 run_id,
                 source.id,
                 status=result.status,
-                depth=crawl_kind,
+                # A walk the time budget cut short has not seen the whole listing, so it
+                # must not push the next full walk six hours out.
+                depth="shallow" if result.truncated else crawl_kind,
                 pages_fetched=result.pages_fetched,
                 pages_changed=result.pages_changed,
                 bytes_fetched=result.bytes_fetched,
@@ -368,10 +485,102 @@ async def crawl_source(
     return result
 
 
+class SourceRef(Protocol):
+    """The two things ingestion needs to know about a source."""
+
+    id: int
+    slug: str
+
+
+@dataclass(slots=True)
+class SourceIdent:
+    """A `SourceRef` for callers that hold a claimed URL rather than a full `SourceRow`."""
+
+    id: int
+    slug: str
+
+
+@dataclass(slots=True)
+class IngestResult:
+    page_id: int
+    # False when this exact content was already stored and extracted for the source, so
+    # nothing ran. True means the page went through extraction just now.
+    changed: bool
+    found: int = 0
+    upserted: UpsertResult = field(default_factory=UpsertResult)
+
+
+async def ingest_page(
+    *,
+    storage: Storage,
+    settings: Settings,
+    source: SourceRef,
+    extractor: object,
+    run_id: int | None,
+    url: str,
+    page_no: int,
+    text: str,
+    extract_leaks: bool = True,
+) -> IngestResult:
+    """Store a fetched page and run it through extraction. The one place this happens.
+
+    Cleaned text in; `raw_pages` row, leaks and exposures out. Both crawlers call it - the
+    source-at-a-time one (`crawl_source`) and the URL-queue one (`intel.crawl.fetch`) - so a
+    page is ingested identically however it arrived. The extractor is used as it always was:
+    `extract_page` is unchanged.
+
+    `extract_leaks=False` is for a page reached by following a link out of a listing: a
+    victim's own page is stored and searched for exposures, but it is not a list of victims, so
+    it is not run through the listing extractor (which would find leaks in prose that is not a
+    listing). Listing pages always extract.
+
+    Raises if storage or extraction fails, after the page row may already have been written.
+    That is deliberate and safe: the row is not counted as handled until `mark_extracted`
+    (see `Storage.save_page`), so a caller that retries will extract it again.
+    """
+    page_id, changed = await storage.save_page(
+        source_id=source.id,
+        crawl_run_id=run_id,
+        url=url,
+        page_no=page_no,
+        text=text,
+    )
+    if not changed:
+        return IngestResult(page_id=page_id, changed=False)
+
+    leaks: list[ExtractedLeak] = []
+    upserted = UpsertResult()
+    if extract_leaks:
+        leaks = extract_page(
+            text,
+            source_group=source.slug,
+            source_url=url,
+            page_no=page_no,
+            extractor_name=extractor.name,  # type: ignore[attr-defined]
+            extractor=extractor,
+        )
+        upserted = await storage.upsert_leaks(leaks, source_id=source.id)
+
+    await storage.mark_extracted(page_id)
+
+    if settings.exposure_detection:
+        await _record_exposures(text, source=source, storage=storage, settings=settings, url=url)
+
+    log.info(
+        "page processed",
+        source=source.slug,
+        page=page_no,
+        found=len(leaks),
+        new=upserted.inserted,
+        seen_again=upserted.updated,
+    )
+    return IngestResult(page_id=page_id, changed=True, found=len(leaks), upserted=upserted)
+
+
 async def _record_exposures(
     text: str,
     *,
-    source: SourceRow,
+    source: SourceRef,
     storage: Storage,
     settings: Settings,
     url: str,
@@ -414,7 +623,7 @@ async def _record_exposures(
 async def _record_mirrors(
     text: str,
     *,
-    source: SourceRow,
+    source: SourceRef,
     storage: Storage,
     url: str,
     known_hosts: set[str],
@@ -427,9 +636,7 @@ async def _record_mirrors(
     nothing acts on it without an operator saying so.
     """
     this_host = onion_host(url)
-    announced, other = classify_onion_urls(
-        text, exclude_hosts=known_hosts | {this_host or ""}
-    )
+    announced, other = classify_onion_urls(text, exclude_hosts=known_hosts | {this_host or ""})
     if not announced and not other:
         return 0
 
@@ -441,9 +648,7 @@ async def _record_mirrors(
     new += await storage.record_mirrors(
         source.id, announced, discovered_from=url, status="self_declared"
     )
-    new += await storage.record_mirrors(
-        source.id, other, discovered_from=url, status="candidate"
-    )
+    new += await storage.record_mirrors(source.id, other, discovered_from=url, status="candidate")
 
     if new:
         log.info(
@@ -543,6 +748,26 @@ def crawl_depth_for(source: SourceRow, *, now: datetime | None = None) -> str:
     return "deep" if elapsed >= source.deep_crawl_interval_seconds else "shallow"
 
 
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+def stalest_first(sources: list[SourceRow]) -> list[SourceRow]:
+    """Order sources so the one waiting longest goes first; never-crawled ones lead.
+
+    Sources start in this order (the concurrency semaphore is first-in-first-out), so when a
+    run cannot finish — the window closes, the worker is restarted — the sources it never
+    reached are exactly the ones that go first next time. Alphabetical order would starve
+    whoever sorts last, every time.
+    """
+    return sorted(
+        sources,
+        key=lambda s: (
+            s.last_crawl_at is not None,
+            s.last_crawl_at or datetime.min.replace(tzinfo=UTC),
+        ),
+    )
+
+
 def due_sources(sources: list[SourceRow], *, now: datetime | None = None) -> list[SourceRow]:
     """Keep only the sources whose own interval says they are ready to be crawled again.
 
@@ -560,7 +785,7 @@ def due_sources(sources: list[SourceRow], *, now: datetime | None = None) -> lis
         elapsed = (moment - source.last_crawl_at).total_seconds()
         if elapsed >= source.crawl_interval_seconds:
             ready.append(source)
-    return ready
+    return stalest_first(ready)
 
 
 async def run_pipeline(
@@ -593,6 +818,26 @@ async def run_pipeline(
             log.warning("no sources to crawl", requested=slugs)
         return RunResult()
 
+    sources = stalest_first(sources)
+    budget = source_time_budget(
+        len(sources),
+        concurrency=settings.concurrency,
+        window_seconds=settings.run_window_seconds,
+        floor_seconds=settings.source_min_budget_seconds,
+        ceiling_seconds=settings.source_max_budget_seconds,
+    )
+    # The floor wins over the window (a source with no time fetches nothing), so with enough
+    # sources the run is longer than asked. Say so — the fix is more concurrency or Tor ports.
+    needed = budget * len(sources) / max(1, settings.concurrency)
+    if needed > settings.run_window_seconds * 1.05:
+        log.warning(
+            "run will overrun its window",
+            sources=len(sources),
+            window_seconds=settings.run_window_seconds,
+            expected_seconds=round(needed),
+            hint="raise CRAWL_CONCURRENCY (and TOR_SOCKS_PORTS) or CRAWL_RUN_WINDOW",
+        )
+
     semaphore = asyncio.Semaphore(settings.concurrency)
     # One budget for the whole run. Sources are concurrent and so are the pages within each
     # of them, so without a shared ceiling the two settings multiply and Tor — not the
@@ -607,10 +852,12 @@ async def run_pipeline(
                 settings=settings,
                 extractor_name=extractor_name,
                 fetch_slots=fetch_slots,
+                time_budget=budget,
             )
 
     log.info(
         "run starting",
+        source_budget_seconds=round(budget),
         sources=len(sources),
         skipped_not_due=considered - len(sources),
         concurrency=settings.concurrency,

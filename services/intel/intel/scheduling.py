@@ -65,3 +65,31 @@ def page_waves(
         yield list(range(page, end + 1))
         page = end + 1
         size = min(size * 2, limit)
+
+
+def source_time_budget(
+    sources: int,
+    *,
+    concurrency: int,
+    window_seconds: int,
+    floor_seconds: int,
+    ceiling_seconds: int,
+) -> float:
+    """How long each source may spend in one run so that all of them fit in the window.
+
+    `concurrency` sources run at once, so a window of W seconds holds `W * concurrency`
+    source-seconds of work; dividing that evenly is what "every source gets the same time"
+    means, however many sources there are. 10 sources and 100 sources both finish inside the
+    window — the 100 just each get a tenth as long.
+
+    Clamped on both sides. The floor is what a source needs to answer page 1 over Tor at all
+    (a single page is 10-30s, and a retry costs more): below it every source would time out
+    having fetched nothing, which is worse than overrunning the window. The ceiling stops a
+    run of two sources from letting one of them dig for the whole window.
+
+    20 sources, 4 at a time, in a 30 minute window: 360s each. Two sources: capped at 900s.
+    """
+    if sources < 1:
+        return float(ceiling_seconds)
+    share = window_seconds * max(1, concurrency) / sources
+    return float(min(max(share, floor_seconds), ceiling_seconds))

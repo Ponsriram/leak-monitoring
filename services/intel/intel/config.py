@@ -83,11 +83,6 @@ class Settings(BaseSettings):
     # this is a dead worker, not a slow registry.
     hunt_timeout_seconds: int = Field(default=120, alias="HUNT_TIMEOUT")
 
-    # How long a finished hunt answers for the same query before it is re-run. An hour is a
-    # compromise between showing an analyst something current and hammering other people's
-    # registries every time someone retypes a company name.
-    hunt_cache_seconds: int = Field(default=3600, alias="HUNT_CACHE_TTL")
-
     # --- background enrichment sweep ---
     # How many domains one tick enriches. Small on purpose: the sweep fills a backlog over
     # hours, and finishing it quickly would mean a burst of outbound requests that looks

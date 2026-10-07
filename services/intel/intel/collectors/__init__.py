@@ -2,18 +2,33 @@
 
 from __future__ import annotations
 
-from .base import Collector, FetchedPage, page_url
+from .base import (
+    Collector,
+    FetchedPage,
+    FetchResult,
+    classify_exception,
+    classify_status,
+    is_page_content_type,
+    page_url,
+)
 from .html import to_text
+from .links import extract_links, normalize_url
 from .onion import classify_onion_urls, find_onion_urls, onion_host
 from .tor_http import TorHttpCollector
 
 __all__ = [
     "Collector",
+    "FetchResult",
     "FetchedPage",
     "TorHttpCollector",
+    "classify_exception",
     "classify_onion_urls",
+    "classify_status",
+    "extract_links",
     "find_onion_urls",
     "get_collector",
+    "is_page_content_type",
+    "normalize_url",
     "onion_host",
     "page_url",
     "to_text",

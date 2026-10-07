@@ -218,18 +218,35 @@ async def test_unusable_leaks_are_skipped_not_inserted(storage: Storage, group: 
 
 
 async def test_page_content_hash_short_circuits(storage: Storage, source_id: int) -> None:
-    """Unchanged pages must report changed=False so extraction is skipped entirely."""
+    """Content that was already extracted must report changed=False, skipping extraction."""
     text = f"unique page content {uuid.uuid4().hex}"
+    kw = dict(source_id=source_id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text)
 
-    page_id, changed = await storage.save_page(
-        source_id=source_id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
-    )
+    page_id, changed = await storage.save_page(**kw)
     assert changed is True
 
-    same_id, changed_again = await storage.save_page(
-        source_id=source_id, crawl_run_id=None, url="http://x.onion/1", page_no=1, text=text
-    )
+    await storage.mark_extracted(page_id)
+
+    same_id, changed_again = await storage.save_page(**kw)
     assert changed_again is False, "identical content must not be reprocessed"
+    assert same_id == page_id
+
+
+async def test_a_stored_page_that_was_never_extracted_is_not_treated_as_seen(
+    storage: Storage, source_id: int
+) -> None:
+    """The row is written before extraction, so a failure in between leaves a stored page.
+
+    Its hash must not count as handled, or the retry would skip exactly the work that failed.
+    """
+    text = f"unique page content {uuid.uuid4().hex}"
+    kw = dict(source_id=source_id, crawl_run_id=None, url="http://x.onion/2", page_no=1, text=text)
+
+    page_id, changed = await storage.save_page(**kw)
+    assert changed is True
+
+    same_id, changed_again = await storage.save_page(**kw)  # extraction never finished
+    assert changed_again is True, "an unextracted page still has work to do"
     assert same_id == page_id
 
 

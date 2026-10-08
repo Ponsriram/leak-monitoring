@@ -1,8 +1,16 @@
 # Override for running just the collection side (redis + tor + worker) on a remote host,
 # against a Postgres that already lives elsewhere (e.g. Neon). Use alongside the base file:
 #
-#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.pi.yml \
+#   AUTH_SECRET=unused docker compose --env-file .env \
+#     -f infra/docker-compose.yml -f infra/docker-compose.pi.yml \
 #     --profile full up -d --build redis tor worker
+#
+# `--env-file .env` is required: without it Compose looks for .env next to the first -f
+# file (infra/), not in the repo root, and the worker gets an empty DATABASE_URL.
+#
+# Compose interpolates every service in the file, including the api this command never
+# starts, so the api's required AUTH_SECRET must have a value. The worker never reads it,
+# so a placeholder is enough.
 #
 # Only listing redis/tor/worker keeps postgres and api out of the run entirely, since the
 # worker below no longer depends on the local postgres service.

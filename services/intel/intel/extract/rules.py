@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import re
 
-from .gazetteer import COUNTRY_PATTERN, SECTOR_PATTERN, is_country_name
+from .describe import is_chrome_line
+from .gazetteer import CCTLD_COUNTRY, COUNTRY_PATTERN, SECTOR_PATTERN, is_country_name
 from .linker import Label, Span
 from .normalize import _DOMAIN_DENYLIST  # noqa: PLC2701 - shared denylist, single source
 
@@ -174,6 +175,136 @@ class RulesExtractor:
         # The linker is order-sensitive by design — restore document order.
         spans.sort(key=lambda span: (span.start, span.end))
         return _dedupe_overlaps(spans)
+
+    def extract_block(self, text: str) -> list[Span]:
+        """Spans for one listing block — a tile, a card, a table row — holding one victim.
+
+        Inside a block the page has already said which text belongs together, so the two
+        guards `extract` needs on a whole page are dropped. The victim is the block's first
+        line that reads as a name (`block_victim_name`), with no legal suffix or nearby
+        domain required; and a country or sector anywhere in the block is the victim's, with
+        no distance window. Dates, sizes, statuses and domains are matched as on a page.
+
+        A block whose name line cannot be found falls back to whatever `extract` accepted as a
+        victim. At most one victim span is returned.
+        """
+        page_spans = self.extract(text)
+        spans = [
+            span
+            for span in page_spans
+            if span.label not in (Label.VICTIM, Label.LOCATION, Label.SECTOR)
+        ]
+
+        named = block_victim_name(text)
+        if named is not None:
+            name, start, end = named
+            spans.append(Span(Label.VICTIM, name, start, end, 0.6))
+        else:
+            fallback = next((s for s in page_spans if s.label == Label.VICTIM), None)
+            if fallback is not None:
+                spans.append(fallback)
+        name_at = next(((s.start, s.end) for s in spans if s.label == Label.VICTIM), None)
+        taken = [(s.start, s.end) for s in spans]
+
+        def outside_name(match: re.Match[str]) -> bool:
+            # "Jordan Electric" is not in Jordan; the name's own words already feed the sector.
+            return name_at is None or match.end() <= name_at[0] or match.start() >= name_at[1]
+
+        def free(match: re.Match[str]) -> bool:
+            # A country inside another span is part of it: the "GB" of "61 GB", the "us" of
+            # a domain. Read as countries they outrank the domain's ccTLD.
+            return all(match.end() <= start or match.start() >= end for start, end in taken)
+
+        for match in COUNTRY_PATTERN.finditer(text):
+            if free(match):
+                spans.append(
+                    Span(Label.LOCATION, match.group(1), match.start(), match.end(), 0.7)
+                )
+        for match in _FLAG_EMOJI.finditer(text):
+            country = CCTLD_COUNTRY.get(_flag_code(match.group(0)))
+            if country:
+                spans.append(Span(Label.LOCATION, country, match.start(), match.end(), 0.8))
+        for match in SECTOR_PATTERN.finditer(text):
+            if outside_name(match):
+                spans.append(
+                    Span(Label.SECTOR, match.group(1), match.start(), match.end(), 0.6)
+                )
+
+        spans.sort(key=lambda span: (span.start, span.end))
+        return _dedupe_overlaps(spans)
+
+
+# A field whose value is the victim's name: "Company: Acme", "Victim - Acme".
+_NAME_FIELD = re.compile(
+    r"^(?:company|victim|target|organi[sz]ation|name)\s*[:\-–]\s*(?P<value>\S.*)$", re.I
+)
+
+# A name is a short line. A long one, or a multi-word sentence, is the tile's description —
+# which means this block has no name line of its own.
+_MAX_NAME_CHARS = 80
+_MAX_NAME_WORDS = 10
+
+# A flag emoji is two regional-indicator letters spelling an ISO country code.
+_FLAG_EMOJI = re.compile("[\U0001f1e6-\U0001f1ff]{2}")
+
+
+def _flag_code(flag: str) -> str:
+    return "".join(chr(ord(char) - 0x1F1E6 + ord("a")) for char in flag)
+
+
+def block_victim_name(text: str) -> tuple[str, int, int] | None:
+    """The victim's name in one listing block: (name, start, end), or None.
+
+    The first line that is not chrome is the name. Skipped on the way: counters, dates,
+    sizes, status words, icon labels (`describe.is_chrome_line`), lines made only of words
+    in `_NOT_AN_ORG`, countries, field labels such as "Revenue:", and bare domains — those
+    are the victim's site, and a tile that prints the link above the name still has a name.
+    "Company: Acme" yields "Acme". A first content line too long to be a name means the
+    block has no name line, and None is returned rather than a sentence.
+    """
+    offset = 0
+    for raw in text.split("\n"):
+        line_start = offset
+        offset += len(raw) + 1
+        line = raw.strip()
+        if not line:
+            continue
+        start = line_start + raw.index(line)
+
+        field = _NAME_FIELD.match(line)
+        if field is not None:
+            value = field.group("value").strip()
+            return value, start + field.start("value"), start + field.start("value") + len(value)
+
+        if _is_chrome_or_field(line):
+            continue
+        if len(line) > _MAX_NAME_CHARS or len(line.split()) > _MAX_NAME_WORDS:
+            return None
+        if line.endswith((".", "!", "?")) and len(line.split()) > 4:
+            return None
+        return line, start, start + len(line)
+    return None
+
+
+def _is_chrome_or_field(line: str) -> bool:
+    if is_chrome_line(line) or is_country_name(line):
+        return True
+    if any(pattern.fullmatch(line) for pattern in _DATE_PATTERNS):
+        return True
+    if _SIZE_PATTERN.fullmatch(line) or _STATUS_PATTERN.fullmatch(line):
+        return True
+    if _NON_VICTIM_LABEL.match(line) or _FIELD_LINE.match(line):
+        return True
+    bare = line.removeprefix("https://").removeprefix("http://").rstrip("/")
+    if _DOMAIN_PATTERN.fullmatch(bare):
+        return True
+    words = [word.strip(".,:;").lower() for word in line.split()]
+    return all(word in _NOT_AN_ORG for word in words if word)
+
+
+# A field of the tile, not its name: "Revenue: $5M", "Files: 120", or a label printed on its
+# own line above its value ("Description:").
+_FIELD_LINE = re.compile(r"^[^\W\d][\w .'&/-]{0,30}:(?:\s|$)")
 
 
 # Words that appear in page furniture but never inside a victim's registered name.

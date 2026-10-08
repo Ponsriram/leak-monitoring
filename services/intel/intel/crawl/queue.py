@@ -79,6 +79,8 @@ class ClaimedUrl:
     # hosts; carried on the claim so discovery needs no extra query to know its boundary.
     base_url: str = ""
     active_url: str | None = None
+    # The source's CSS selector for one listing block, if it has one (see `to_text`).
+    item_selector: str | None = None
 
 
 @dataclass(slots=True)
@@ -150,7 +152,7 @@ returning u.id, u.source_id, s.slug as source_slug, s.collector, u.cycle_id, u.u
           u.page_no, u.depth, u.attempt, u.parent_id, u.content_sha256, u.failure_count,
           s.crawl_interval_seconds as interval_seconds,
           s.deep_crawl_interval_seconds as deep_interval_seconds,
-          s.base_url, s.active_url
+          s.base_url, s.active_url, s.item_selector
 """
 
 _ENQUEUE_SQL = """

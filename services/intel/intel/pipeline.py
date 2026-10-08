@@ -16,6 +16,8 @@ from typing import Protocol
 import structlog
 
 from .collectors import (
+    BLOCK_BREAK,
+    RECORD_SEPARATOR,
     classify_onion_urls,
     extract_links,
     get_collector,
@@ -25,7 +27,7 @@ from .collectors import (
     to_text,
 )
 from .config import Settings
-from .extract import get_extractor, link_spans
+from .extract import get_extractor, link_block, link_spans
 from .extract.secrets import find_exposures
 from .models import ExtractedLeak
 from .scheduling import page_waves, source_time_budget
@@ -227,7 +229,7 @@ async def crawl_source(
         result.pages_fetched += 1
         result.bytes_fetched += len(page.html.encode("utf-8"))
 
-        text = to_text(page.html)
+        text = to_text(page.html, item_selector=source.item_selector)
 
         if settings.discover_mirrors:
             result.mirrors_found += await _record_mirrors(
@@ -346,7 +348,7 @@ async def crawl_source(
                 result.link_pages += 1
                 result.bytes_fetched += len(page.html.encode("utf-8"))
 
-                text = to_text(page.html)
+                text = to_text(page.html, segment=False)
                 if settings.discover_mirrors:
                     result.mirrors_found += await _record_mirrors(
                         text,
@@ -718,8 +720,30 @@ def extract_page(
     extractor_name: str,
     extractor: object | None = None,
 ) -> list[ExtractedLeak]:
-    """Page text -> validated leaks. Pure, so it is trivially testable against fixtures."""
+    """Page text -> validated leaks. Pure, so it is trivially testable against fixtures.
+
+    Text that `to_text` split into listing blocks is extracted one block at a time, at most
+    one leak per block, and text outside the blocks makes no leaks. Text without blocks goes
+    through the whole-page linker exactly as before.
+    """
     engine = extractor if extractor is not None else get_extractor(extractor_name)
+
+    blocks = split_blocks(text)
+    if blocks is not None:
+        leaks: list[ExtractedLeak] = []
+        for block in blocks:
+            leak = link_block(
+                engine.extract_block(block),  # type: ignore[attr-defined]
+                block_text=block,
+                source_group=source_group,
+                source_url=source_url,
+                page_no=page_no,
+                method=extractor_name,
+            )
+            if leak is not None:
+                leaks.append(leak)
+        return leaks
+
     spans = engine.extract(text)  # type: ignore[attr-defined]
     return link_spans(
         spans,
@@ -729,6 +753,18 @@ def extract_page(
         method=extractor_name,
         page_text=text,
     )
+
+
+def split_blocks(text: str) -> list[str] | None:
+    """The listing blocks `to_text` marked in page text, or None for text it did not split.
+
+    Segmented text is always `before, block, …, block, after`; the outer two are page text
+    around the listing and are not blocks.
+    """
+    if RECORD_SEPARATOR not in text:
+        return None
+    parts = text.split(BLOCK_BREAK)
+    return [part for part in parts[1:-1] if part.strip()]
 
 
 def crawl_depth_for(source: SourceRow, *, now: datetime | None = None) -> str:

@@ -145,6 +145,9 @@ _MAX_WINDOW_CHARS = 8000
 # Shorter than this is a label or a stray fragment, not something worth a column.
 _MIN_SUMMARY_CHARS = 30
 
+# A short all-caps line is a badge ("PUBLISHED FULL", "NEW"), not a sentence.
+_BADGE = re.compile(r"^[^a-z]{2,24}$")
+
 # Lines that are page furniture rather than prose: update stamps, bare dates, view and
 # download counters, countdown clocks, a lone size or status word.
 _FURNITURE = (
@@ -156,8 +159,7 @@ _FURNITURE = (
     re.compile(r"^[\d\s.,:/\-]+(?:utc|gmt)?$", re.I),
     re.compile(r"^\W*\d+\s*(?:views?|visits?|downloads?)$", re.I),
     re.compile(r"^\W*(?:views?|visits?|downloads?)\s*[:\-]?\s*[\d.,]+[km]?$", re.I),
-    # A short all-caps line is a badge ("PUBLISHED FULL", "NEW"), not a sentence.
-    re.compile(r"^[^a-z]{2,24}$"),
+    _BADGE,
     re.compile(r"^\d+\s*[dD]\s*\d+\s*[hH](?:\s*\d+\s*[mM])?(?:\s*\d+\s*[sS])?$"),
     re.compile(r"^[\d.,]+\s*[kmgtp]i?b$", re.I),
     re.compile(
@@ -168,6 +170,33 @@ _FURNITURE = (
 )
 
 _WHITESPACE = re.compile(r"\s+")
+
+# Icon labels, badges and buttons that tile listings print on every tile. On inc-ransom each
+# tile carries "Encrypted", "Proof" and "Views" beside its view counter; flattened into one
+# text they became the summary of whichever victim came first.
+_TILE_CHROME_WORDS = frozenset(
+    {
+        "encrypted", "proof", "proofs", "view", "views", "visits", "new", "hot", "top",
+        "featured", "pinned", "verified", "updated", "read", "show", "open", "click", "here",
+    }
+)
+_COUNTER = re.compile(r"^\W*[\d.,]+\s*[km]?\+?\W*$", re.I)
+_WORD = re.compile(r"[^\W\d_]+")
+
+
+def is_chrome_line(line: str) -> bool:
+    """A line of a listing tile that is chrome — a counter, a date, an icon label — not content.
+
+    The all-caps badge rule of the summary filter is left out on purpose: a tile can print its
+    victim's name in capitals, and this test decides what may be a name.
+    """
+    text = line.strip(" \t|•·-–—")
+    if not any(char.isalpha() for char in text) or _COUNTER.match(text):
+        return True
+    if any(pattern.match(text) for pattern in _FURNITURE if pattern is not _BADGE):
+        return True
+    words = _WORD.findall(text.lower())
+    return bool(words) and all(word in _TILE_CHROME_WORDS for word in words)
 
 
 def listing_window(
@@ -194,17 +223,22 @@ def listing_window(
     return text[start:end]
 
 
-def clean_summary(window: str, *, drop: tuple[str | None, ...] = ()) -> str | None:
+def clean_summary(
+    window: str, *, drop: tuple[str | None, ...] = (), tile: bool = False
+) -> str | None:
     """Reduce a listing window to its prose.
 
     `drop` are values the row already shows in their own columns — the victim's name and
-    domain — which some sites repeat on their own line inside the listing.
+    domain — which some sites repeat on their own line inside the listing. `tile` also drops
+    the icon labels and counters a listing tile prints (`is_chrome_line`).
     """
     dropped = {value.strip().lower() for value in drop if value}
     kept: list[str] = []
     for raw in window.splitlines():
         line = raw.strip(" \t|•·-–—")
         if len(line) < 3:
+            continue
+        if tile and is_chrome_line(line):
             continue
         lowered = line.lower()
         if lowered in dropped or lowered.rstrip("/") in dropped:

@@ -151,7 +151,13 @@ class CrawlFetcher:
             )
 
         base = {"http_status": fetched.http_status, "response_ms": fetched.response_ms}
-        text = to_text(fetched.text or "")
+        # Listing pages keep their tile boundaries (see `to_text`); a followed page is one
+        # victim's own page and is read whole.
+        text = to_text(
+            fetched.text or "",
+            segment=url.kind == "listing",
+            item_selector=url.item_selector,
+        )
 
         await self._record_mirrors(url, text)
 

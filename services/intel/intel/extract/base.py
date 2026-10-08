@@ -20,3 +20,7 @@ class Extractor(Protocol):
     def extract(self, text: str) -> list[Span]:
         """Return spans found in `text`. Must not raise on messy input."""
         ...
+
+    def extract_block(self, text: str) -> list[Span]:
+        """Spans for one listing block that shows a single victim (see `link_block`)."""
+        ...

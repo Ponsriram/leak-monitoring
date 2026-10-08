@@ -46,6 +46,14 @@ export const sources = pgTable(
     paginationStyle: text("pagination_style").notNull().default("none"),
     maxPages: integer("max_pages").notNull().default(10),
 
+    /**
+     * CSS selector for one victim's tile/card/row on this source's listing pages.
+     *
+     * Optional. The crawler finds repeated listing blocks on its own; this overrides that
+     * detection for a site where it picks the wrong element. Null means "detect".
+     */
+    itemSelector: text("item_selector"),
+
     /** Per-source cadence, so a fast-moving leak site isn't throttled by a dead one. */
     crawlIntervalSeconds: integer("crawl_interval_seconds").notNull().default(3600),
 

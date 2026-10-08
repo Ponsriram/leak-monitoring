@@ -124,28 +124,7 @@ def link_spans(
     ]
     # Which record index each URL span belongs to, keyed by the span's start offset.
     url_owner = _assign_urls_to_nearest_victim(spans, victim_positions)
-
-    def attach(record: _Record, span: Span) -> None:
-        if span.confidence is not None:
-            record.confidences.append(span.confidence)
-
-        match span.label:
-            case Label.VICTIM_URL:
-                # Don't let a second URL clobber the first — the first is the victim's own
-                # site; later ones are usually mirrors or the leak download link.
-                if record.victim_url is None:
-                    record.victim_url = span.text
-                    record.url_pos = (span.start, span.end)
-            case Label.DATE:
-                record.date_raw = record.date_raw or span.text
-            case Label.SIZE:
-                record.size_raw = record.size_raw or span.text
-            case Label.STATUS:
-                record.status_raws.append(span.text)
-            case Label.LOCATION:
-                record.location_raws.append(span.text)
-            case Label.SECTOR:
-                record.sector_raws.append(span.text)
+    attach = _attach
 
     # URL spans are applied after every record exists, since one may belong to a victim that
     # has not been read yet.
@@ -220,6 +199,85 @@ def link_spans(
             leaks.append(leak)
 
     return leaks
+
+
+def _attach(record: _Record, span: Span) -> None:
+    """Fold one attribute span into a record."""
+    if span.confidence is not None:
+        record.confidences.append(span.confidence)
+
+    match span.label:
+        case Label.VICTIM_URL:
+            # Don't let a second URL clobber the first — the first is the victim's own
+            # site; later ones are usually mirrors or the leak download link.
+            if record.victim_url is None:
+                record.victim_url = span.text
+                record.url_pos = (span.start, span.end)
+        case Label.DATE:
+            record.date_raw = record.date_raw or span.text
+        case Label.SIZE:
+            record.size_raw = record.size_raw or span.text
+        case Label.STATUS:
+            record.status_raws.append(span.text)
+        case Label.LOCATION:
+            record.location_raws.append(span.text)
+        case Label.SECTOR:
+            record.sector_raws.append(span.text)
+
+
+def link_block(
+    spans: list[Span],
+    *,
+    block_text: str,
+    source_group: str,
+    source_url: str | None = None,
+    page_no: int = 1,
+    method: str = "rules",
+    model_version: str | None = None,
+) -> ExtractedLeak | None:
+    """One listing block (a tile, a card, a row) -> at most one leak.
+
+    The block boundary is the page's own: everything inside belongs to the one victim it
+    shows, so there is no reading-order attribution to get wrong. The first victim span names
+    the record and every other span is its attribute; a second victim span is ignored rather
+    than opening a record of its own. The summary is the block's own text with its chrome
+    removed, so nothing of the next tile can bleed into it.
+    """
+    record = _Record()
+    group: str | None = None
+    for span in spans:
+        text = span.text.strip()
+        if not text:
+            continue
+        if span.label == Label.GROUP:
+            group = group or text
+        elif span.label == Label.VICTIM:
+            if record.victim_name is None:
+                record.victim_name = text
+                record.victim_pos = (span.start, span.end)
+                if span.confidence is not None:
+                    record.confidences.append(span.confidence)
+        else:
+            _attach(record, span)
+
+    if record.victim_name is None and record.victim_url is None:
+        return None
+
+    record.summary = clean_summary(
+        block_text,
+        drop=(record.victim_name, record.victim_url, extract_domain(record.victim_url)),
+        tile=True,
+    )
+    leak = _to_leak(
+        record,
+        source_group=group or source_group,
+        source_url=source_url,
+        page_no=page_no,
+        method=method,
+        model_version=model_version,
+        mode="tile",
+    )
+    return leak if leak.is_usable else None
 
 
 def _attach_summaries(records: list[_Record], spans: list[Span], text: str) -> None:
@@ -392,6 +450,7 @@ def _to_leak(
     page_no: int,
     method: str,
     model_version: str | None,
+    mode: str | None = None,
 ) -> ExtractedLeak:
     domain = extract_domain(record.victim_url) or extract_domain(record.victim_name)
 
@@ -445,5 +504,8 @@ def _to_leak(
             method=method,  # type: ignore[arg-type]
             model_version=model_version,
             confidence=confidence,
+            # Which path produced the row: "tile" (one block, one victim). Absent for the
+            # whole-page linker, whose rows are stored exactly as they always were.
+            **({"mode": mode} if mode else {}),
         ),
     )

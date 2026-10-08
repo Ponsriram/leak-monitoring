@@ -1,0 +1,1 @@
+ALTER TABLE "sources" ADD COLUMN "item_selector" text;

@@ -48,6 +48,9 @@ class SourceRow:
     # it has never had a deep walk, which correctly makes one due.
     deep_crawl_interval_seconds: int = 21600
     last_deep_crawl_at: datetime | None = None
+    # CSS selector for one listing block on this source (migration 0014); None means the
+    # blocks are detected (`collectors.html.listing_blocks`).
+    item_selector: str | None = None
 
     @property
     def crawl_url(self) -> str:
@@ -102,6 +105,72 @@ class UpsertResult:
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+# A tile-mode row (one listing block, one victim — `extraction.mode = "tile"`) meeting a row the
+# whole-page linker wrote. That old row's attributes were attributed by reading order across a
+# page of tiles, so its summary, status, date, size, country and sector may be a neighbour's:
+# the tile record replaces them outright, once. Every later sighting coalesces as usual.
+_RETILE = """(
+    excluded.extraction->>'mode' = 'tile'
+    and leaks.extraction->>'method' = 'rules'
+    and leaks.extraction->>'mode' is null
+)"""
+
+_UPSERT_LEAK_SQL = f"""
+insert into leaks (
+    dedupe_hash, victim_name, victim_domain, victim_country,
+    victim_sector, actor_group, source_id, source_url,
+    published_at, published_at_raw, first_seen_at, last_seen_at,
+    status, leak_type, leak_size_bytes, extraction,
+    summary, incident_types
+)
+values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,
+        $12::leak_status,$13,$14,$15::jsonb,$16,$17::text[])
+on conflict (dedupe_hash) do update set
+    -- first_seen_at is deliberately absent.
+    last_seen_at = excluded.last_seen_at,
+    victim_name = coalesce(excluded.victim_name, leaks.victim_name),
+    victim_domain = coalesce(excluded.victim_domain, leaks.victim_domain),
+    -- Coalesced like the rest: a later extraction can fill them in, and a sparser one cannot
+    -- blank them. Replaced once by a tile record (see `_RETILE`).
+    victim_country = case when {_RETILE} then excluded.victim_country
+        else coalesce(excluded.victim_country, leaks.victim_country) end,
+    victim_sector = case when {_RETILE} then excluded.victim_sector
+        else coalesce(excluded.victim_sector, leaks.victim_sector) end,
+    published_at = case when {_RETILE} then excluded.published_at
+        else coalesce(excluded.published_at, leaks.published_at) end,
+    published_at_raw = case when {_RETILE} then excluded.published_at_raw
+        else coalesce(excluded.published_at_raw, leaks.published_at_raw) end,
+    -- Never downgrade a known status to 'unknown'.
+    --
+    -- An edit anywhere on a page re-derives every listing on it, and a listing whose status
+    -- wording moved out of the extractor's reach would otherwise revert from 'published' to
+    -- 'unknown'. A real state change still writes through, because that arrives as a status
+    -- other than 'unknown'.
+    status = case
+        when {_RETILE} then excluded.status
+        when excluded.status = 'unknown'::leak_status then leaks.status
+        else excluded.status
+    end,
+    leak_size_bytes = case when {_RETILE} then excluded.leak_size_bytes
+        else coalesce(excluded.leak_size_bytes, leaks.leak_size_bytes) end,
+    source_url = coalesce(excluded.source_url, leaks.source_url),
+    -- Coalesced like the victim fields: a re-crawl whose window came out empty (the listing
+    -- below it moved) must not blank a description.
+    summary = case when {_RETILE} then excluded.summary
+        else coalesce(excluded.summary, leaks.summary) end,
+    -- A union, on the same never-downgrade rule as `status`: a type is evidence that was on
+    -- the page at some point, and a listing does not stop having been published because the
+    -- wording moved.
+    incident_types = case when {_RETILE} then excluded.incident_types
+        else array(
+            select distinct t from unnest(leaks.incident_types || excluded.incident_types) t
+        ) end,
+    extraction = excluded.extraction,
+    updated_at = now()
+returning (xmax = 0) as was_inserted, id
+"""
 
 
 class Storage:
@@ -159,7 +228,7 @@ class Storage:
             select id, slug, name, base_url, collector, pagination_style, max_pages,
                    deep_crawl_interval_seconds, last_deep_crawl_at,
                    crawl_interval_seconds, request_delay_seconds, enabled,
-                   last_crawl_at, consecutive_failures, active_url
+                   last_crawl_at, consecutive_failures, active_url, item_selector
             from sources
             where (not $1::boolean) or enabled
             order by slug
@@ -174,7 +243,7 @@ class Storage:
             select id, slug, name, base_url, collector, pagination_style, max_pages,
                    deep_crawl_interval_seconds, last_deep_crawl_at,
                    crawl_interval_seconds, request_delay_seconds, enabled,
-                   last_crawl_at, consecutive_failures, active_url
+                   last_crawl_at, consecutive_failures, active_url, item_selector
             from sources where slug = $1
             """,
             slug,
@@ -217,9 +286,10 @@ class Storage:
                     """
                     insert into sources (
                         slug, name, base_url, collector, pagination_style, max_pages,
-                        crawl_interval_seconds, request_delay_seconds, enabled, notes
+                        crawl_interval_seconds, request_delay_seconds, enabled, notes,
+                        item_selector
                     )
-                    values ($1,$2,$3,$4::collector_kind,$5,$6,$7,$8,$9,$10)
+                    values ($1,$2,$3,$4::collector_kind,$5,$6,$7,$8,$9,$10,$11)
                     on conflict (slug) do update set
                         name = excluded.name,
                         base_url = excluded.base_url,
@@ -230,6 +300,7 @@ class Storage:
                         request_delay_seconds = excluded.request_delay_seconds,
                         -- enabled is deliberately absent: see the docstring.
                         notes = excluded.notes,
+                        item_selector = excluded.item_selector,
                         updated_at = now()
                     returning (xmax = 0) as was_inserted
                     """,
@@ -243,6 +314,7 @@ class Storage:
                     int(item.get("request_delay_seconds", 10)),
                     bool(item.get("enabled", True)),
                     item.get("notes"),
+                    item.get("item_selector") or None,
                 )
                 if result and result["was_inserted"]:
                     inserted += 1
@@ -401,58 +473,7 @@ class Storage:
                     continue
 
                 row = await conn.fetchrow(
-                    """
-                    insert into leaks (
-                        dedupe_hash, victim_name, victim_domain, victim_country,
-                        victim_sector, actor_group, source_id, source_url,
-                        published_at, published_at_raw, first_seen_at, last_seen_at,
-                        status, leak_type, leak_size_bytes, extraction,
-                        summary, incident_types
-                    )
-                    values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,
-                            $12::leak_status,$13,$14,$15::jsonb,$16,$17::text[])
-                    on conflict (dedupe_hash) do update set
-                        -- first_seen_at is deliberately absent.
-                        last_seen_at = excluded.last_seen_at,
-                        victim_name = coalesce(excluded.victim_name, leaks.victim_name),
-                        victim_domain = coalesce(excluded.victim_domain, leaks.victim_domain),
-                        -- Coalesced like the rest: a later extraction can fill them in, and
-                        -- a sparser one cannot blank them.
-                        victim_country = coalesce(excluded.victim_country, leaks.victim_country),
-                        victim_sector = coalesce(excluded.victim_sector, leaks.victim_sector),
-                        published_at = coalesce(excluded.published_at, leaks.published_at),
-                        published_at_raw = coalesce(
-                            excluded.published_at_raw, leaks.published_at_raw
-                        ),
-                        -- Never downgrade a known status to 'unknown'.
-                        --
-                        -- An edit anywhere on a page re-derives every listing on it, and a
-                        -- listing whose status wording moved out of the extractor's reach
-                        -- would otherwise revert from 'published' to 'unknown'. A real state
-                        -- change still writes through, because that arrives as a status
-                        -- other than 'unknown'.
-                        status = case
-                            when excluded.status = 'unknown'::leak_status then leaks.status
-                            else excluded.status
-                        end,
-                        leak_size_bytes = coalesce(
-                            excluded.leak_size_bytes, leaks.leak_size_bytes
-                        ),
-                        source_url = coalesce(excluded.source_url, leaks.source_url),
-                        -- Coalesced like the victim fields: a re-crawl whose window came out
-                        -- empty (the listing below it moved) must not blank a description.
-                        summary = coalesce(excluded.summary, leaks.summary),
-                        -- A union, on the same never-downgrade rule as `status`: a type is
-                        -- evidence that was on the page at some point, and a listing does
-                        -- not stop having been published because the wording moved.
-                        incident_types = array(
-                            select distinct t
-                              from unnest(leaks.incident_types || excluded.incident_types) t
-                        ),
-                        extraction = excluded.extraction,
-                        updated_at = now()
-                    returning (xmax = 0) as was_inserted, id
-                    """,
+                    _UPSERT_LEAK_SQL,
                     leak.dedupe_hash,
                     leak.victim_name,
                     leak.victim_domain,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from selectolax.parser import HTMLParser, Node
 
@@ -97,22 +98,7 @@ def to_text(
     selector, set per source) names the blocks instead of detecting them. A page with no
     blocks is returned exactly as `segment=False` would return it.
     """
-    tree = HTMLParser(html)
-
-    for tag in _STRIP_TAGS:
-        for node in tree.css(tag):
-            node.decompose()
-
-    if drop_volatile:
-        for selector in _VOLATILE_SELECTORS:
-            try:
-                for node in tree.css(selector):
-                    if len(node.text(strip=True)) <= _VOLATILE_MAX_CHARS:
-                        node.decompose()
-            except Exception:  # noqa: BLE001 - selectolax raises on odd selectors
-                continue
-
-    body = tree.body or tree.root
+    body = _prepared_body(html, drop_volatile=drop_volatile)
     if body is None:
         return ""
 
@@ -130,14 +116,103 @@ def listing_blocks(html: str, *, item_selector: str | None = None) -> list[Node]
     by the total text of its matching children and the highest wins, so a nav menu or a
     footer's link row loses to the listing. `item_selector` replaces detection outright.
     """
-    tree = HTMLParser(html)
-    for tag in _STRIP_TAGS:
-        for node in tree.css(tag):
-            node.decompose()
-    body = tree.body or tree.root
+    body = _prepared_body(html)
     if body is None:
         return []
     return _select_blocks(body, item_selector)
+
+
+def tile_links(
+    html: str, *, item_selector: str | None = None, changed: set[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """The links inside a listing's tiles: (in new or changed tiles, in unchanged ones).
+
+    `changed` holds the text of the tiles that are new or changed since the page was last
+    seen, exactly as `to_text` rendered them; None means every tile counts as changed. Raw
+    `href` values, in page order — the caller applies the usual link rules to them.
+    """
+    body = _prepared_body(html)
+    if body is None:
+        return [], []
+    fresh: list[str] = []
+    stale: list[str] = []
+    for block in _select_blocks(body, item_selector):
+        hrefs = [
+            href
+            for node in _self_and_descendants(block, "a[href]")
+            if node.tag == "a" and (href := (node.attributes.get("href") or "").strip())
+        ]
+        if changed is None or _block_text(block) in changed:
+            fresh.extend(hrefs)
+        else:
+            stale.extend(hrefs)
+    return fresh, stale
+
+
+@dataclass(slots=True)
+class DetailPage:
+    """A victim's own page, read for the one victim it describes."""
+
+    # Heading candidates for the victim's name, best first: <h1>s, <h2>s, elements whose
+    # class says title or name, then the document <title>.
+    titles: list[str]
+    # The page's text without its navigation, header and footer.
+    text: str
+
+
+_TITLE_SELECTORS = ("h1", "h2", "[class*='title']", "[class*='name']")
+_MAX_TITLE_CHARS = 120
+
+
+def detail_page(html: str) -> DetailPage:
+    """Split a followed page into name candidates and its main text."""
+    tree = HTMLParser(html)
+    document_title = tree.css_first("title")
+    page_title = document_title.text(strip=True) if document_title is not None else ""
+
+    body = _prepared_body(html, tree=tree)
+    if body is None:
+        return DetailPage(titles=[], text="")
+    for tag in _CHROME_TAGS:
+        for node in body.css(tag):
+            node.decompose()
+
+    titles: list[str] = []
+    for selector in _TITLE_SELECTORS:
+        for node in body.css(selector):
+            titles.append(node.text(separator=" ", strip=True))
+    titles.append(page_title)
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for raw in titles:
+        title = " ".join(_clean(raw).split())
+        if 2 <= len(title) <= _MAX_TITLE_CHARS and title.lower() not in seen:
+            seen.add(title.lower())
+            candidates.append(title)
+    return DetailPage(titles=candidates, text=_clean(body.text(separator="\n", strip=True)))
+
+
+def _prepared_body(
+    html: str, *, drop_volatile: bool = True, tree: HTMLParser | None = None
+) -> Node | None:
+    """The page's body with scripts, styles and (optionally) live clocks removed."""
+    tree = tree or HTMLParser(html)
+
+    for tag in _STRIP_TAGS:
+        for node in tree.css(tag):
+            node.decompose()
+
+    if drop_volatile:
+        for selector in _VOLATILE_SELECTORS:
+            try:
+                for node in tree.css(selector):
+                    if len(node.text(strip=True)) <= _VOLATILE_MAX_CHARS:
+                        node.decompose()
+            except Exception:  # noqa: BLE001 - selectolax raises on odd selectors
+                continue
+
+    return tree.body or tree.root
 
 
 def _select_blocks(root: Node, item_selector: str | None) -> list[Node]:
@@ -318,9 +393,7 @@ def _block_text(block: Node) -> str:
 def _flag_countries(block: Node) -> list[str]:
     """Countries a block shows as a flag image or icon class rather than as text."""
     found: list[str] = []
-    # `css("*")`, not `traverse()`: on a node that is not the root, selectolax's traverse
-    # carries on past the node's own subtree into the rest of the page.
-    for node in [block, *block.css("*")]:
+    for node in _self_and_descendants(block, "*"):
         attrs = node.attributes
         candidates: list[str | None] = []
         if node.tag == "img":
@@ -346,6 +419,19 @@ def _country_of(label: str | None) -> str | None:
     if 2 < len(label) <= 40:
         return parse_country(label)
     return None
+
+
+def _self_and_descendants(node: Node, selector: str) -> list[Node]:
+    """`node` and the elements under it that match `selector`, each once, in page order.
+
+    `css()` rather than `traverse()`: on a node that is not the root, selectolax's traverse
+    carries on past the node's own subtree into the rest of the page. And `css()` on a node
+    may include the node itself, hence the de-duplication.
+    """
+    matched = node.css(selector)
+    if node.mem_id in {match.mem_id for match in matched}:
+        return matched
+    return [node, *matched]
 
 
 def _element_children(node: Node) -> Iterator[Node]:

@@ -178,6 +178,7 @@ _TILE_CHROME_WORDS = frozenset(
     {
         "encrypted", "proof", "proofs", "view", "views", "visits", "new", "hot", "top",
         "featured", "pinned", "verified", "updated", "read", "show", "open", "click", "here",
+        "files",
     }
 )
 _COUNTER = re.compile(r"^\W*[\d.,]+\s*[km]?\+?\W*$", re.I)

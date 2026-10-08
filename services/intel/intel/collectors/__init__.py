@@ -11,7 +11,15 @@ from .base import (
     is_page_content_type,
     page_url,
 )
-from .html import BLOCK_BREAK, RECORD_SEPARATOR, listing_blocks, to_text
+from .html import (
+    BLOCK_BREAK,
+    RECORD_SEPARATOR,
+    DetailPage,
+    detail_page,
+    listing_blocks,
+    tile_links,
+    to_text,
+)
 from .links import extract_links, normalize_url
 from .onion import classify_onion_urls, find_onion_urls, onion_host
 from .tor_http import TorHttpCollector
@@ -20,12 +28,14 @@ __all__ = [
     "BLOCK_BREAK",
     "RECORD_SEPARATOR",
     "Collector",
+    "DetailPage",
     "FetchResult",
     "FetchedPage",
     "TorHttpCollector",
     "classify_exception",
     "classify_onion_urls",
     "classify_status",
+    "detail_page",
     "extract_links",
     "find_onion_urls",
     "get_collector",
@@ -34,6 +44,7 @@ __all__ = [
     "normalize_url",
     "onion_host",
     "page_url",
+    "tile_links",
     "to_text",
 ]
 

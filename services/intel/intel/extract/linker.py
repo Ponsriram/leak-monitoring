@@ -234,6 +234,8 @@ def link_block(
     page_no: int = 1,
     method: str = "rules",
     model_version: str | None = None,
+    mode: str = "tile",
+    drop: tuple[str, ...] = (),
 ) -> ExtractedLeak | None:
     """One listing block (a tile, a card, a row) -> at most one leak.
 
@@ -242,6 +244,10 @@ def link_block(
     the record and every other span is its attribute; a second victim span is ignored rather
     than opening a record of its own. The summary is the block's own text with its chrome
     removed, so nothing of the next tile can bleed into it.
+
+    `mode` is recorded in `extraction.mode`: "tile", or "detail" for a victim's own page read
+    the same way (see `pipeline.extract_detail`). `drop` are more lines to keep out of the
+    summary, as the name and domain are.
     """
     record = _Record()
     group: str | None = None
@@ -265,7 +271,7 @@ def link_block(
 
     record.summary = clean_summary(
         block_text,
-        drop=(record.victim_name, record.victim_url, extract_domain(record.victim_url)),
+        drop=(record.victim_name, record.victim_url, extract_domain(record.victim_url), *drop),
         tile=True,
     )
     leak = _to_leak(
@@ -275,7 +281,7 @@ def link_block(
         page_no=page_no,
         method=method,
         model_version=model_version,
-        mode="tile",
+        mode=mode,
     )
     return leak if leak.is_usable else None
 

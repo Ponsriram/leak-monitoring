@@ -205,9 +205,12 @@ arq cron (every CRAWL_SWEEP_INTERVAL_MINUTES)  or  a Sync request
   does: only evidence of an end prunes.
 - **Link following** (`CRAWL_FOLLOW_LINKS`): from a page whose content is new or changed, up to
   `CRAWL_LINKS_PER_PAGE` new same-host links, `CRAWL_LINK_DEPTH` deep, `CRAWL_LINK_MAX_PAGES` per source
-  per cycle; never a file, an account page, another host or an internal address. Followed pages are
-  stored and scanned for exposures but not run through the listing extractor. They are recrawled when
-  `CRAWL_LINK_INTERVAL` (a week) has elapsed, without their listing having to change.
+  per cycle; never a file, an account page, another host or an internal address. On a tiled listing
+  the links inside new or changed tiles are offered first and links inside unchanged tiles not at all,
+  so the per-page budget goes on new victims' pages rather than the menu. Followed pages are stored,
+  scanned for exposures, and read as one victim's page (see "Detail pages" below) — never run through
+  the listing extractor. They are recrawled when `CRAWL_LINK_INTERVAL` (a week) has elapsed, without
+  their listing having to change.
 - **Reporting** reuses existing tables: `crawl_runs` per source (what the Sources page reads), and
   `crawl_cycles` with a stored `summary` (sources, URL outcomes, retries, links, HTTP and error
   histograms). The Sync button's `crawl_requests` lifecycle is unchanged.
@@ -245,6 +248,17 @@ Rows written by the whole-page linker are corrected, not duplicated: identity is
 (`dedupe_hash` is group + domain-or-name), and the first time a tile record (`extraction.mode =
 "tile"`) meets such a row it replaces the row's summary, status, date, size, country, sector and
 incident types outright instead of coalescing with them.
+
+### Detail pages fill in their victim, and never create one
+
+A page reached by following a link (`crawl_urls.kind = 'link'`, or the legacy crawler's link walk)
+is read as one victim's own page (`collectors.detail_page`, `pipeline.extract_detail`): name
+candidates from its `<h1>`, `<h2>`, title-like elements and `<title>`, and every other field —
+domain, country, size, date, status, and revenue and description into the summary — from its main
+text with the header, nav and footer removed. `Storage.enrich_leak` then finds the leak this source
+already holds for that victim, by domain or by name (lowercased, punctuation collapsed), and fills
+only its empty fields. A page that matches no listed victim creates nothing and is logged: only the
+listing says who is a victim. `dedupe_hash` is never touched, so the listing keeps finding the row.
 
 ### Why the API cannot start a crawl itself
 
@@ -412,8 +426,9 @@ what grows the frontier in practice.
 (`CRAWL_DISCOVER_MIRRORS`) but never switches to one; `CRAWL_MIRROR_FAILOVER` affects only the
 legacy crawler. An operator can promote one with `intel mirrors use`.
 
-**Followed pages are not extracted for leaks.** They are stored and scanned for exposures, but a
-victim's own page is not run through the listing extractor.
+**Detail pages only enrich.** A victim's own page fills empty fields of the leak its listing
+created; it never creates a leak, so a victim that appears only on a detail page (not on any
+listing) is not collected. There is no revenue column: revenue is kept in the summary text.
 
 **Out-of-range pages that repeat page 1** (some sites do this) are not detected as the end of a
 listing; they read as unchanged duplicates.

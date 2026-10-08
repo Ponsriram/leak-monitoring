@@ -107,6 +107,22 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+_NAME_PUNCTUATION = re.compile(r"[\W_]+")
+
+# The SQL twin of `normalize_victim_name`, applied to `leaks.victim_name`.
+_NORMALIZED_VICTIM_NAME = (
+    "lower(btrim(regexp_replace(coalesce(victim_name, ''), '[^[:alnum:]]+', ' ', 'g')))"
+)
+
+
+def normalize_victim_name(name: str | None) -> str:
+    """A victim name as compared across pages: lowercased, punctuation runs to one space.
+
+    "Marlow & Finch, Solicitors" and "marlow finch solicitors" are one victim.
+    """
+    return _NAME_PUNCTUATION.sub(" ", (name or "").lower()).strip()
+
+
 # A tile-mode row (one listing block, one victim — `extraction.mode = "tile"`) meeting a row the
 # whole-page linker wrote. That old row's attributes were attributed by reading order across a
 # page of tiles, so its summary, status, date, size, country and sector may be a neighbour's:
@@ -448,7 +464,94 @@ class Storage:
             "update raw_pages set extracted_at = now() where id = $1", raw_page_id
         )
 
+    async def previous_text(
+        self, *, source_id: int, url: str, exclude_sha256: str
+    ) -> str | None:
+        """The text this URL had before its current content, or None if it never had other.
+
+        Used to tell which tiles of a changed listing are new or changed, so only their
+        victims' pages are followed.
+        """
+        return await self._pool.fetchval(
+            """
+            select text from raw_pages
+             where source_id = $1 and url = $2 and content_sha256 <> $3
+             order by fetched_at desc, id desc
+             limit 1
+            """,
+            source_id,
+            url,
+            exclude_sha256,
+        )
+
     # ---------- leaks ----------
+
+    async def enrich_leak(
+        self,
+        leak: ExtractedLeak,
+        *,
+        names: list[str],
+        source_id: int,
+        detail_url: str,
+    ) -> int | None:
+        """Fill the empty fields of the leak a victim's own page describes. Returns its id.
+
+        The leak must already exist — found on the listing of the same source — and is matched
+        by domain or by name (any of `names`, compared after `normalize_victim_name`). Nothing
+        is ever created here: a detail page that matches no listed victim returns None.
+
+        Only empty fields are written: domain, country, sector, date, size, summary, and a
+        status still 'unknown'. Incident types are unioned. A domain match outranks a name
+        match. `dedupe_hash` is never changed, so the listing keeps finding the same row.
+        """
+        keys = [key for name in names if (key := normalize_victim_name(name))]
+        if not keys and not leak.victim_domain:
+            return None
+        return await self._pool.fetchval(
+            f"""
+            with target as (
+                select id from leaks
+                 where source_id = $1
+                   and (victim_domain = $2 or {_NORMALIZED_VICTIM_NAME} = any($3::text[]))
+                 order by (victim_domain = $2) is true desc, last_seen_at desc
+                 limit 1
+            )
+            update leaks l set
+                -- Safe to copy: a leak of this source already holding the domain would have
+                -- been the target, since a domain match ranks first.
+                victim_domain = coalesce(l.victim_domain, $2),
+                victim_country = coalesce(l.victim_country, $4),
+                victim_sector = coalesce(l.victim_sector, $5),
+                published_at = coalesce(l.published_at, $6),
+                published_at_raw = coalesce(l.published_at_raw, $7),
+                leak_size_bytes = coalesce(l.leak_size_bytes, $8),
+                summary = coalesce(l.summary, $9),
+                status = case
+                    when l.status = 'unknown'::leak_status then $10::leak_status
+                    else l.status
+                end,
+                incident_types = array(
+                    select distinct t from unnest(l.incident_types || $11::text[]) t
+                ),
+                extraction = l.extraction || jsonb_build_object('detail_url', $12::text),
+                updated_at = now()
+              from target
+             where l.id = target.id
+            returning l.id
+            """,
+            source_id,
+            leak.victim_domain,
+            keys,
+            leak.victim_country,
+            leak.victim_sector,
+            leak.published_at,
+            leak.published_at_raw,
+            leak.leak_size_bytes,
+            leak.summary,
+            leak.status.value,
+            leak.incident_types,
+            detail_url,
+        )
 
     async def upsert_leaks(
         self, leaks: list[ExtractedLeak], *, source_id: int | None

@@ -114,6 +114,12 @@ class FakeStorage:
     async def mark_extracted(self, raw_page_id: int) -> None:
         return None
 
+    async def previous_text(self, *, source_id, url, exclude_sha256):  # type: ignore[no-untyped-def]
+        return None
+
+    async def enrich_leak(self, leak, *, names, source_id, detail_url):  # type: ignore[no-untyped-def]
+        return None
+
     async def finish_crawl(self, run_id, source_id, **kwargs):  # type: ignore[no-untyped-def]
         self.finished = kwargs
 

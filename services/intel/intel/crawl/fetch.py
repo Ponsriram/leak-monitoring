@@ -5,8 +5,9 @@
         -> content checks: gate page, empty page
         -> SHA-256 of the cleaned text, compared with the URL's stored hash
              same  -> unchanged: extraction does not run
-             new   -> `ingest_page` (existing extraction, leaks, exposures), and only if that
-                      succeeds is the new hash handed back to be stored
+             new   -> `ingest_page` (a listing: leaks, one per tile on a tiled listing; a
+                      followed page: fills in its victim's leak; both: exposures), and only
+                      if that succeeds is the new hash handed back to be stored
 
 The handler never retries and never decides *whether* to retry. It reports `ok`, `transient`
 or `permanent`, and the queue turns that into a state change. A worker slot is therefore only
@@ -25,9 +26,10 @@ from typing import Any
 
 import structlog
 
-from ..collectors import extract_links, get_collector, to_text
+from ..collectors import detail_page, extract_links, get_collector, tile_links, to_text
 from ..config import Settings
 from ..extract import get_extractor
+from ..extract.json_items import items_text, match_items, parse_mapping
 from ..pipeline import (
     MIN_PAGE_TEXT_CHARS,
     SourceIdent,
@@ -151,7 +153,13 @@ class CrawlFetcher:
             )
 
         base = {"http_status": fetched.http_status, "response_ms": fetched.response_ms}
-        text = to_text(fetched.text or "")
+        # Listing pages keep their tile boundaries (see `to_text`); a followed page is one
+        # victim's own page and is read whole.
+        text = to_text(
+            fetched.text or "",
+            segment=url.kind == "listing",
+            item_selector=url.item_selector,
+        )
 
         await self._record_mirrors(url, text)
 
@@ -183,6 +191,17 @@ class CrawlFetcher:
             # Past page 1 an empty page is not a failure: it is where the listing ends.
             return Outcome("ok", result="empty", **base)
 
+        # A browser source that maps its records from the JSON its page loads: the records
+        # are appended to the text, so the hash sees a change that shows only in the JSON.
+        json_mapping = (
+            parse_mapping(url.json_items)
+            if url.kind == "listing" and url.collector == "browser"
+            else None
+        )
+        json_records = match_items(fetched.json_responses, json_mapping)
+        if json_records is not None and json_mapping is not None:
+            text = f"{text}\n{items_text(json_records, json_mapping)}"
+
         digest = content_hash(text)
 
         if url.content_sha256 == digest:
@@ -201,6 +220,10 @@ class CrawlFetcher:
                 page_no=url.page_no or 1,
                 text=text,
                 extract_leaks=url.kind == "listing",
+                # A followed page is one victim's own page: it fills in that victim's leak.
+                detail=detail_page(fetched.text or "") if url.kind == "link" else None,
+                json_records=json_records,
+                json_mapping=json_mapping,
             )
         except Exception as exc:  # noqa: BLE001 - reported as a failed attempt, never raised
             # The old hash stays. The page row may already be stored, but it is not marked
@@ -226,27 +249,40 @@ class CrawlFetcher:
             content_sha256=digest,
             leaks_found=ingested.upserted.inserted,
             leaks_updated=ingested.upserted.updated,
-            links=self._candidate_links(url, fetched.text or ""),
+            links=self._candidate_links(url, fetched.text or "", ingested.changed_blocks),
             **base,
         )
 
-    def _candidate_links(self, url: ClaimedUrl, html: str) -> list[NewUrl]:
+    def _candidate_links(
+        self, url: ClaimedUrl, html: str, changed_blocks: set[str] | None = None
+    ) -> list[NewUrl]:
         """Links on this page that could become crawl jobs, in page order.
 
         Cheap pre-filters only (depth, setting, a cycle to belong to) plus `extract_links`,
         which already keeps to the page's own host and drops files and account pages. The
         queue validates every one again against the source before anything is queued.
+
+        On a listing split into tiles, links inside new or changed tiles come first and links
+        inside unchanged tiles are left out: the queue takes a page's links in this order up
+        to `CRAWL_LINKS_PER_PAGE`, so that budget goes on the pages of new victims.
         """
         s = self._settings
         if not s.follow_links or url.cycle_id is None or url.depth >= s.link_depth:
             return []
+        prefer, avoid = (
+            tile_links(html, item_selector=url.item_selector, changed=changed_blocks)
+            if changed_blocks is not None
+            else ([], [])
+        )
         return [
             NewUrl(
                 url=link,
                 url_normalized=normalize_crawl_url(link),
                 kind="link",
             )
-            for link in extract_links(html, url.url, limit=_CANDIDATE_CAP)
+            for link in extract_links(
+                html, url.url, limit=_CANDIDATE_CAP, prefer=prefer, avoid=avoid
+            )
         ]
 
     async def _run_id(self, url: ClaimedUrl) -> int | None:

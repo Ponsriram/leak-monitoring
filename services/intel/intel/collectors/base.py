@@ -62,6 +62,14 @@ def page_url(base_url: str, page_no: int, style: str) -> str | None:
 
 
 @dataclass(slots=True)
+class CapturedJson:
+    """A JSON response the page loaded by itself (XHR/fetch) while it rendered."""
+
+    url: str
+    body: str
+
+
+@dataclass(slots=True)
 class FetchResult:
     """One fetch attempt, described fully enough for the queue to decide what happens next.
 
@@ -78,6 +86,9 @@ class FetchResult:
     size_bytes: int = 0
     content_type: str | None = None
     error: str | None = None
+    # Same-host JSON the page fetched while rendering (browser collector only). None when it
+    # fetched none, or the collector cannot see the page's own requests.
+    json_responses: list[CapturedJson] | None = None
 
 
 # Statuses where trying again can plausibly succeed. 408/425/429 are the server asking for a

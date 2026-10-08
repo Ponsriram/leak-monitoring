@@ -21,6 +21,14 @@
 #
 # collector:        http (fast, no JS) | browser (Playwright, for JS-rendered listings)
 # pagination_style: none | query (?page=N) | path (/page/N) | offset (?offset=N)
+# item_selector:    optional CSS selector for ONE victim's tile, card or row on the listing,
+#                   e.g. "a.blog__card". Leave it out: listings laid out as repeated tiles are
+#                   detected on their own, one victim per tile. Set it only for a site where
+#                   detection picks the wrong element (check with `intel sources probe`).
+# json_items:       optional, `collector: browser` only. Where the victim records are in the
+#                   JSON the page loads (XHR/fetch), so leaks are built from them instead of
+#                   the rendered text. No source has one: fill it only from what Tor Browser's
+#                   DevTools show the site sending — see "json_items" in START.md.
 #
 # Nearly all sources use `collector: http`: `browser` launches Firefox per source and waits
 # on page lifecycle events, `http` is one async request. Use `browser` only for a site whose

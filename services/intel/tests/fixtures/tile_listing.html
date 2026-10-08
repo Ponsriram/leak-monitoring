@@ -1,0 +1,148 @@
+<!doctype html>
+<!--
+  Synthetic tile listing modelled on the inc-ransom disclosure page: a scrollable list of
+  tiles, each with the victim's name, domain, a country flag, icon labels and a view counter,
+  plus a detail panel that the site opens on click (present in the DOM, hidden). Every name,
+  domain and figure here is invented.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>INC. Ransom - Disclosures</title>
+    <style>
+      .blog__list { overflow-y: scroll; }
+    </style>
+    <script>
+      window.__state = { page: "disclosure" };
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="logo" href="/">INC. Ransom</a>
+      <nav>
+        <ul>
+          <li><a href="/blog/disclosure">Disclosures</a></li>
+          <li><a href="/blog/leaks">Leaks</a></li>
+          <li><a href="/blog/rules">Rules</a></li>
+          <li><a href="/blog/contact">Contact</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <h1>Disclosures</h1>
+        <p>Companies that chose not to cooperate. Their data is published below.</p>
+      </section>
+
+      <div class="blog__list scroll-container">
+        <a class="blog__card" href="/blog/disclosure/66f1a0c2">
+          <div class="blog__card-head">
+            <img class="flag" src="/static/img/flags/us.svg" alt="" />
+            <span class="blog__card-name">Cristo Electric Association</span>
+          </div>
+          <div class="blog__card-domain">cristoelectric.org</div>
+          <div class="blog__card-icons"><span>Encrypted</span><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>1 204</span></div>
+          <div class="blog__card-panel" hidden>
+            <p>Revenue: $14M</p>
+            <p>
+              Rural electric cooperative serving 9,000 members. 412 GB taken: payroll, member
+              records and SCADA network documentation.
+            </p>
+          </div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c3">
+          <div class="blog__card-head">
+            <span class="blog__card-name">Grupo Caberj</span>
+            <span class="flag-emoji">🇧🇷</span>
+          </div>
+          <div class="blog__card-icons"><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>877</span></div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c4">
+          <div class="blog__card-head">
+            <span class="fi fi-us"></span>
+            <span class="blog__card-name">Rimrock Foundation</span>
+          </div>
+          <div class="blog__card-domain">rimrockfoundation.org</div>
+          <div class="blog__card-icons"><span>Encrypted</span><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>2 310</span></div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c5">
+          <div class="blog__card-head">
+            <img class="flag" src="/static/img/flag.png" alt="Canada" />
+            <span class="blog__card-name">Post Metal Recycling</span>
+          </div>
+          <div class="blog__card-icons"><span>Encrypted</span><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>365</span></div>
+        </a>
+
+        <!-- A variant tile: the base classes plus a modifier. -->
+        <a class="blog__card blog__card--new" href="/blog/disclosure/66f1a0c6">
+          <div class="blog__card-head">
+            <span class="badge">NEW</span>
+            <span class="date">14.09.2026</span>
+            <span class="blog__card-name">Tec Imports</span>
+          </div>
+          <div class="blog__card-domain">tecimports.com.br</div>
+          <div class="blog__card-views"><span>Views</span><span>98</span></div>
+          <div class="blog__card-panel" hidden>
+            <p>Description:</p>
+            <p>Importer and distributor of industrial machinery parts. 61 GB of contracts.</p>
+          </div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c7">
+          <div class="blog__card-head">
+            <img class="flag" src="/static/img/flag.png" alt="United Kingdom" />
+            <span class="blog__card-name">Wavecrest HFA</span>
+          </div>
+          <div class="blog__card-domain">wavecresthfa.com</div>
+          <div class="blog__card-icons"><span>Encrypted</span><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>1 870</span></div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c8">
+          <div class="blog__card-head">
+            <img class="flag" src="/static/img/flags/se.svg" alt="" />
+            <span class="blog__card-name">Nordic Freight AB</span>
+          </div>
+          <div class="blog__card-domain">nordicfreight.se</div>
+          <div class="blog__card-icons"><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>530</span></div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0c9">
+          <div class="blog__card-head">
+            <span class="blog__card-name">Harbor Dental Group</span>
+          </div>
+          <div class="blog__card-domain">harbordental.com</div>
+          <div class="countdown-timer">2d 04h 11m</div>
+          <div class="blog__card-views"><span>Views</span><span>44</span></div>
+          <div class="blog__card-panel" hidden>
+            <p>Status: negotiating</p>
+            <p>Dental practice group with 14 clinics. Patient records and insurance claims.</p>
+          </div>
+        </a>
+
+        <a class="blog__card" href="/blog/disclosure/66f1a0ca">
+          <div class="blog__card-head">
+            <img class="flag" src="/static/img/flags/us.svg" alt="" />
+            <span class="blog__card-name">Alpine Ridge School District</span>
+          </div>
+          <div class="blog__card-icons"><span>Encrypted</span><span>Proof</span></div>
+          <div class="blog__card-views"><span>Views</span><span>3 016</span></div>
+        </a>
+      </div>
+    </main>
+
+    <footer>
+      <p>Our mirror: incmirrorexampleexampleexampleexampleexampleexampleexample.onion</p>
+      <p>&copy; 2026 INC. Ransom</p>
+    </footer>
+  </body>
+</html>

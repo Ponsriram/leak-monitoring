@@ -106,6 +106,12 @@ class FakeIngestStorage:
     async def known_onion_hosts(self) -> set[str]:
         return set()
 
+    async def previous_text(self, *, source_id, url, exclude_sha256):  # type: ignore[no-untyped-def]
+        return None
+
+    async def enrich_leak(self, leak, *, names, source_id, detail_url):  # type: ignore[no-untyped-def]
+        return None
+
 
 async def crawl(
     pool,

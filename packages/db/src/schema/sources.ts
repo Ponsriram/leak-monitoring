@@ -3,6 +3,7 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -45,6 +46,22 @@ export const sources = pgTable(
      */
     paginationStyle: text("pagination_style").notNull().default("none"),
     maxPages: integer("max_pages").notNull().default(10),
+
+    /**
+     * CSS selector for one victim's tile/card/row on this source's listing pages.
+     *
+     * Optional. The crawler finds repeated listing blocks on its own; this overrides that
+     * detection for a site where it picks the wrong element. Null means "detect".
+     */
+    itemSelector: text("item_selector"),
+
+    /**
+     * Where this source's victim records sit in the JSON its pages load by XHR/fetch: the
+     * path to the array and the field names for name, domain, country, revenue, description
+     * and date. Optional, and only read for `browser` sources, whose collector captures that
+     * JSON. Null means "parse the rendered page". See START.md for how to fill it in.
+     */
+    jsonItems: jsonb("json_items"),
 
     /** Per-source cadence, so a fast-moving leak site isn't throttled by a dead one. */
     crawlIntervalSeconds: integer("crawl_interval_seconds").notNull().default(3600),

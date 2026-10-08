@@ -16,20 +16,34 @@ from typing import Protocol
 import structlog
 
 from .collectors import (
+    BLOCK_BREAK,
+    RECORD_SEPARATOR,
+    CapturedJson,
+    DetailPage,
     classify_onion_urls,
+    detail_page,
     extract_links,
     get_collector,
     normalize_url,
     onion_host,
     page_url,
+    tile_links,
     to_text,
 )
 from .config import Settings
-from .extract import get_extractor, link_spans
+from .extract import Label, Span, get_extractor, link_block, link_spans
+from .extract.json_items import (
+    JsonMapping,
+    items_text,
+    leaks_from_items,
+    match_items,
+    parse_mapping,
+)
+from .extract.rules import block_victim_name
 from .extract.secrets import find_exposures
 from .models import ExtractedLeak
 from .scheduling import page_waves, source_time_budget
-from .storage import SourceRow, Storage, UpsertResult
+from .storage import SourceRow, Storage, UpsertResult, content_hash
 
 log = structlog.get_logger(__name__)
 
@@ -97,6 +111,8 @@ class _Page:
     page_no: int
     url: str
     html: str | None
+    # JSON the browser saw the page load, when the source maps its records from JSON.
+    json_responses: list[CapturedJson] | None = None
 
 
 @dataclass(slots=True)
@@ -195,6 +211,8 @@ async def crawl_source(
     # rather than queueing behind each other.
     stagger = source.request_delay_seconds / width if source.request_delay_seconds > 0 else 0.0
 
+    json_mapping = parse_mapping(source.json_items) if source.collector == "browser" else None
+
     async def fetch_page(page_no: int, base: str, delay: float = 0.0) -> _Page | None:
         """Fetch one page. None means this source has no URL for that page number."""
         url = page_url(base, page_no, source.pagination_style)
@@ -203,7 +221,14 @@ async def crawl_source(
         if delay > 0:
             await asyncio.sleep(delay)
         async with slots:
-            return _Page(page_no, url, await collector.fetch(url))
+            if json_mapping is None:
+                return _Page(page_no, url, await collector.fetch(url))
+            # The JSON the page loads only comes back on the detailed result. For the browser
+            # collector `fetch` is this same single attempt, unwrapped.
+            fetched = await collector.fetch_detailed(url)  # type: ignore[attr-defined]
+            collector.last_error = fetched.error
+            html = fetched.text if fetched.kind == "ok" else None
+            return _Page(page_no, url, html, fetched.json_responses)
 
     async def fetch_wave(pages: list[int], base: str) -> list[_Page]:
         """Fetch a whole wave at once, returned in page order."""
@@ -212,8 +237,9 @@ async def crawl_source(
         )
         return [page for page in fetched if page is not None]
 
-    # Changed listing pages whose links are worth following, as (url, html).
-    seeds: list[tuple[str, str]] = []
+    # Changed listing pages whose links are worth following, as (url, html, the text of their
+    # new or changed tiles — None for a page without tiles).
+    seeds: list[tuple[str, str, set[str] | None]] = []
     follow = settings.follow_links and crawl_kind == "deep"
 
     async def process(page: _Page) -> bool:
@@ -227,7 +253,7 @@ async def crawl_source(
         result.pages_fetched += 1
         result.bytes_fetched += len(page.html.encode("utf-8"))
 
-        text = to_text(page.html)
+        text = to_text(page.html, item_selector=source.item_selector)
 
         if settings.discover_mirrors:
             result.mirrors_found += await _record_mirrors(
@@ -262,6 +288,10 @@ async def crawl_source(
             log.info("page empty, stopping", source=source.slug, page=page.page_no)
             return False
 
+        json_records = match_items(page.json_responses, json_mapping)
+        if json_records is not None and json_mapping is not None:
+            text = f"{text}\n{items_text(json_records, json_mapping)}"
+
         ingested = await ingest_page(
             storage=storage,
             settings=settings,
@@ -271,6 +301,8 @@ async def crawl_source(
             url=page.url,
             page_no=page.page_no,
             text=text,
+            json_records=json_records,
+            json_mapping=json_mapping,
         )
 
         if not ingested.changed:
@@ -282,7 +314,7 @@ async def crawl_source(
 
         result.pages_changed += 1
         if follow:
-            seeds.append((page.url, page.html))
+            seeds.append((page.url, page.html, ingested.changed_blocks))
 
         upserted = ingested.upserted
         result.leaks.inserted += upserted.inserted
@@ -291,7 +323,7 @@ async def crawl_source(
         result.leaks.new_leak_ids.extend(upserted.new_leak_ids)
         return True
 
-    async def follow_links(seed_pages: list[tuple[str, str]]) -> None:
+    async def follow_links(seed_pages: list[tuple[str, str, set[str] | None]]) -> None:
         """Breadth-first walk down the tree behind the listing.
 
         Level 1 is the links on the listing pages, level 2 the links on those, and so on to
@@ -300,11 +332,16 @@ async def crawl_source(
         fetched in total, and the source's time budget is checked before every level. Each
         page is fetched once however many pages link to it.
 
+        On a listing split into tiles, the links inside new or changed tiles are taken first
+        and the links inside unchanged tiles not at all, so the budget goes on the pages of
+        victims that just appeared or moved.
+
         A followed page is stored and searched for exposures and onion addresses, like a
         listing page, but it is not run through the listing extractor — a victim's own page
-        is not a list of victims.
+        is not a list of victims. It fills in the empty fields of the leak the listing holds
+        for its victim (`ingest_page` with `detail`).
         """
-        visited = {normalize_url(url) for url, _ in seed_pages}
+        visited = {normalize_url(url) for url, _, _ in seed_pages}
         remaining = settings.link_max_pages
         level = seed_pages
 
@@ -323,9 +360,19 @@ async def crawl_source(
                 break
 
             targets: list[str] = []
-            for url, html in level:
+            for url, html, changed_blocks in level:
+                prefer, avoid = (
+                    tile_links(html, item_selector=source.item_selector, changed=changed_blocks)
+                    if changed_blocks is not None
+                    else ([], [])
+                )
                 for link in extract_links(
-                    html, url, visited=visited, limit=settings.links_per_page
+                    html,
+                    url,
+                    visited=visited,
+                    limit=settings.links_per_page,
+                    prefer=prefer,
+                    avoid=avoid,
                 ):
                     visited.add(normalize_url(link))
                     targets.append(link)
@@ -346,7 +393,7 @@ async def crawl_source(
                 result.link_pages += 1
                 result.bytes_fetched += len(page.html.encode("utf-8"))
 
-                text = to_text(page.html)
+                text = to_text(page.html, segment=False)
                 if settings.discover_mirrors:
                     result.mirrors_found += await _record_mirrors(
                         text,
@@ -358,22 +405,23 @@ async def crawl_source(
                 if len(text.strip()) < MIN_PAGE_TEXT_CHARS:
                     continue
 
-                page_id, changed = await storage.save_page(
-                    source_id=source.id,
-                    crawl_run_id=run_id,
+                ingested = await ingest_page(
+                    storage=storage,
+                    settings=settings,
+                    source=source,
+                    extractor=extractor,
+                    run_id=run_id,
                     url=page.url,
                     page_no=depth_no,
                     text=text,
+                    extract_leaks=False,
+                    detail=detail_page(page.html),
                 )
-                if not changed:
+                if not ingested.changed:
                     continue
                 result.pages_changed += 1
-                await storage.mark_extracted(page_id)
-                if settings.exposure_detection:
-                    await _record_exposures(
-                        text, source=source, storage=storage, settings=settings, url=page.url
-                    )
-                level.append((page.url, page.html))
+                result.leaks.updated += ingested.upserted.updated
+                level.append((page.url, page.html, None))
 
             log.info(
                 "link level done",
@@ -508,6 +556,9 @@ class IngestResult:
     changed: bool
     found: int = 0
     upserted: UpsertResult = field(default_factory=UpsertResult)
+    # On a listing split into tiles: the text of the tiles that are new or changed since the
+    # page was last stored. Only their links are followed. None when the page has no tiles.
+    changed_blocks: set[str] | None = None
 
 
 async def ingest_page(
@@ -521,18 +572,25 @@ async def ingest_page(
     page_no: int,
     text: str,
     extract_leaks: bool = True,
+    detail: DetailPage | None = None,
+    json_records: list[dict] | None = None,
+    json_mapping: JsonMapping | None = None,
 ) -> IngestResult:
     """Store a fetched page and run it through extraction. The one place this happens.
 
     Cleaned text in; `raw_pages` row, leaks and exposures out. Both crawlers call it - the
     source-at-a-time one (`crawl_source`) and the URL-queue one (`intel.crawl.fetch`) - so a
-    page is ingested identically however it arrived. The extractor is used as it always was:
-    `extract_page` is unchanged.
+    page is ingested identically however it arrived.
 
     `extract_leaks=False` is for a page reached by following a link out of a listing: a
     victim's own page is stored and searched for exposures, but it is not a list of victims, so
-    it is not run through the listing extractor (which would find leaks in prose that is not a
-    listing). Listing pages always extract.
+    it is never run through the listing extractor and never creates a leak. With `detail` (the
+    page read by `collectors.detail_page`) it fills the empty fields of the leak the listing
+    already holds for that victim — see `extract_detail` and `Storage.enrich_leak`.
+
+    `json_records` are the victim records a browser source's page loaded as JSON, picked out
+    by the source's `json_mapping` (`extract.json_items`). When there are any, a listing's
+    leaks are built from them instead of from its text.
 
     Raises if storage or extraction fails, after the page row may already have been written.
     That is deliberate and safe: the row is not counted as handled until `mark_extracted`
@@ -550,16 +608,62 @@ async def ingest_page(
 
     leaks: list[ExtractedLeak] = []
     upserted = UpsertResult()
+    changed_blocks: set[str] | None = None
     if extract_leaks:
-        leaks = extract_page(
-            text,
+        if json_records is not None and json_mapping is not None:
+            leaks = leaks_from_items(
+                json_records,
+                json_mapping,
+                source_group=source.slug,
+                source_url=url,
+                page_no=page_no,
+            )
+        else:
+            leaks = extract_page(
+                text,
+                source_group=source.slug,
+                source_url=url,
+                page_no=page_no,
+                extractor_name=extractor.name,  # type: ignore[attr-defined]
+                extractor=extractor,
+            )
+        upserted = await storage.upsert_leaks(leaks, source_id=source.id)
+        blocks = split_blocks(text)
+        if blocks is not None:
+            previous = await storage.previous_text(
+                source_id=source.id, url=url, exclude_sha256=content_hash(text)
+            )
+            seen = set(split_blocks(previous) or []) if previous else set()
+            changed_blocks = {block for block in blocks if block not in seen}
+    elif detail is not None:
+        found = extract_detail(
+            detail,
             source_group=source.slug,
             source_url=url,
             page_no=page_no,
             extractor_name=extractor.name,  # type: ignore[attr-defined]
             extractor=extractor,
         )
-        upserted = await storage.upsert_leaks(leaks, source_id=source.id)
+        if found is not None:
+            leak, names = found
+            leaks = [leak]
+            leak_id = await storage.enrich_leak(
+                leak, names=names, source_id=source.id, detail_url=url
+            )
+            if leak_id is None:
+                # Never a new leak from a detail page: what is not on the listing is not
+                # known to be a victim. Logged, so a site whose detail pages never match
+                # (a name the listing prints differently) is visible.
+                log.info(
+                    "detail page matched no listed victim",
+                    source=source.slug,
+                    url=url,
+                    names=names[:3],
+                    domain=leak.victim_domain,
+                )
+            else:
+                upserted.updated = 1
+                log.info("detail page enriched a leak", source=source.slug, leak_id=leak_id)
 
     await storage.mark_extracted(page_id)
 
@@ -574,7 +678,13 @@ async def ingest_page(
         new=upserted.inserted,
         seen_again=upserted.updated,
     )
-    return IngestResult(page_id=page_id, changed=True, found=len(leaks), upserted=upserted)
+    return IngestResult(
+        page_id=page_id,
+        changed=True,
+        found=len(leaks),
+        upserted=upserted,
+        changed_blocks=changed_blocks,
+    )
 
 
 async def _record_exposures(
@@ -718,8 +828,30 @@ def extract_page(
     extractor_name: str,
     extractor: object | None = None,
 ) -> list[ExtractedLeak]:
-    """Page text -> validated leaks. Pure, so it is trivially testable against fixtures."""
+    """Page text -> validated leaks. Pure, so it is trivially testable against fixtures.
+
+    Text that `to_text` split into listing blocks is extracted one block at a time, at most
+    one leak per block, and text outside the blocks makes no leaks. Text without blocks goes
+    through the whole-page linker exactly as before.
+    """
     engine = extractor if extractor is not None else get_extractor(extractor_name)
+
+    blocks = split_blocks(text)
+    if blocks is not None:
+        leaks: list[ExtractedLeak] = []
+        for block in blocks:
+            leak = link_block(
+                engine.extract_block(block),  # type: ignore[attr-defined]
+                block_text=block,
+                source_group=source_group,
+                source_url=source_url,
+                page_no=page_no,
+                method=extractor_name,
+            )
+            if leak is not None:
+                leaks.append(leak)
+        return leaks
+
     spans = engine.extract(text)  # type: ignore[attr-defined]
     return link_spans(
         spans,
@@ -729,6 +861,72 @@ def extract_page(
         method=extractor_name,
         page_text=text,
     )
+
+
+# How much of a victim's own page is read. The same backstop as a listing window
+# (`describe._MAX_WINDOW_CHARS`): a detail page that goes on to list ten thousand file names
+# has said what it has to say about the victim long before then.
+_DETAIL_MAX_CHARS = 8000
+
+
+def extract_detail(
+    page: DetailPage,
+    *,
+    source_group: str,
+    source_url: str | None,
+    page_no: int,
+    extractor_name: str,
+    extractor: object | None = None,
+) -> tuple[ExtractedLeak, list[str]] | None:
+    """A victim's own page -> (its fields as a leak, the names it may be filed under).
+
+    One victim per page. Its name is the first heading that reads as a name — `<h1>`, then
+    `<h2>`, then a title-like element, then the document title — and every other field
+    (domain, country, size, date, status, revenue and description into the summary) comes
+    from the page's main text, read like one listing tile. The other name candidates are
+    returned too: a page whose `<h1>` is the crew's banner still names its victim in an `<h2>`.
+
+    The leak is never stored as such; it is what `Storage.enrich_leak` fills in from.
+    """
+    engine = extractor if extractor is not None else get_extractor(extractor_name)
+    text = page.text[:_DETAIL_MAX_CHARS]
+
+    names = [named[0] for title in page.titles if (named := block_victim_name(title))]
+    spans = [
+        span
+        for span in engine.extract_block(text)  # type: ignore[attr-defined]
+        if span.label != Label.VICTIM
+    ]
+    if names:
+        at = max(text.find(names[0]), 0)
+        spans.append(Span(Label.VICTIM, names[0], at, at + len(names[0]), 0.6))
+        spans.sort(key=lambda span: (span.start, span.end))
+
+    leak = link_block(
+        spans,
+        block_text=text,
+        source_group=source_group,
+        source_url=source_url,
+        page_no=page_no,
+        method=extractor_name,
+        mode="detail",
+        drop=tuple(page.titles),
+    )
+    if leak is None:
+        return None
+    return leak, names
+
+
+def split_blocks(text: str) -> list[str] | None:
+    """The listing blocks `to_text` marked in page text, or None for text it did not split.
+
+    Segmented text is always `before, block, …, block, after`; the outer two are page text
+    around the listing and are not blocks.
+    """
+    if RECORD_SEPARATOR not in text:
+        return None
+    parts = text.split(BLOCK_BREAK)
+    return [part for part in parts[1:-1] if part.strip()]
 
 
 def crawl_depth_for(source: SourceRow, *, now: datetime | None = None) -> str:

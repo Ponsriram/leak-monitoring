@@ -120,6 +120,46 @@ npm run intel -- status
 Then reload **http://localhost:8080** — new leaks appear on Dashboard and Leaks, and the **Map**
 tab plots them by country. The dashboard refreshes every 60 seconds.
 
+### Reading a JavaScript site's own data (`json_items`)
+
+A `collector: browser` source captures the JSON its page loads from its own host (XHR / fetch)
+while it renders. If you tell it where the victim records are in that JSON, leaks are built
+straight from them — with fields the page may only show after a click — instead of from the
+rendered text. Every source ships **without** a mapping; add one only from what you have seen
+the site actually send.
+
+1. Open the listing page in **Tor Browser** and press **F12** → **Network** → filter **XHR**
+   (Fetch/XHR). Reload the page.
+2. Click each request and look at **Response**. Find the one whose body holds the list of
+   victims — an array of objects, one per company.
+3. Note a stable part of its URL (e.g. `/api/v1/posts`), the path from the top of the body to the
+   array (e.g. `data.posts`; leave it out if the body *is* the array), and, inside one object, the
+   key for each field (use dots for nested keys, e.g. `company.title`).
+4. Add it to the source in `services/intel/sources.yaml` — `name` or `domain` is required, the
+   rest are optional:
+
+   ```yaml
+   - slug: example
+     collector: browser
+     # ...
+     json_items:
+       match: "/api/v1/posts"     # substring of the request URL
+       path: "data.posts"         # dotted path to the array
+       name: "company.title"
+       domain: "company.website"
+       country: "country"         # a name or a two-letter code
+       revenue: "revenue"         # kept in the summary as "Revenue: ..."
+       description: "description"
+       date: "createdAt"          # a date string, or a Unix epoch in s or ms
+   ```
+
+5. `npm run intel -- sources sync`, then crawl the source and check `npm run intel -- status`.
+   If the response is not seen or the path does not lead to a list, the page is read from its
+   text exactly as before — a mapping never makes a source collect *less*.
+
+The collector keeps only same-host JSON, up to `CRAWL_MAX_BYTES` per page in total, and only what
+the page loads by itself: it does not click.
+
 ### Feeds (no Tor, no enabling needed)
 
 Alongside the crawler, the worker pulls free public feeds on its own schedule:

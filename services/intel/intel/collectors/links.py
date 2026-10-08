@@ -99,33 +99,35 @@ def extract_links(
     *,
     visited: set[str] | None = None,
     limit: int = 5,
+    prefer: list[str] | None = None,
+    avoid: list[str] | None = None,
 ) -> list[str]:
     """Up to `limit` followable links from `html`, in the order the page presents them.
 
     `visited` holds `normalize_url` forms already fetched or queued; those are skipped. The
     set is not modified — the caller decides when a link counts as taken.
+
+    `prefer` are hrefs to take before the page's own order — the links inside a listing's
+    new or changed tiles, so the per-page limit is spent on victim pages rather than on the
+    menu. `avoid` are hrefs never to take — links inside tiles that have not changed. Both go
+    through exactly the same rules as every other link.
     """
     if limit < 1:
         return []
 
     host = urlsplit(page_url).netloc.lower()
-    seen = visited or set()
+    seen = set(visited or ())
+    seen.update(key for href in avoid or () if (key := _followable_key(href, page_url, host)))
     picked: list[str] = []
     picked_keys: set[str] = set()
 
-    for node in HTMLParser(html).css("a[href]"):
-        href = (node.attributes.get("href") or "").strip()
-        if not href or href.startswith(("#", "mailto:", "javascript:", "tel:", "magnet:")):
-            continue
-
-        absolute = urljoin(page_url, href)
-        parts = urlsplit(absolute)
-
-        if parts.scheme not in ("http", "https") or parts.netloc.lower() != host:
-            continue
-        if len(absolute) > _MAX_URL_CHARS:
-            continue
-        if _is_file(parts.path) or _SKIP_PATH.search(parts.path + ("?" if parts.query else "")):
+    hrefs = [
+        *(prefer or ()),
+        *(node.attributes.get("href") or "" for node in HTMLParser(html).css("a[href]")),
+    ]
+    for href in hrefs:
+        absolute = _followable(href, page_url, host)
+        if absolute is None:
             continue
 
         key = normalize_url(absolute)
@@ -138,6 +140,29 @@ def extract_links(
             break
 
     return picked
+
+
+def _followable(href: str | None, page_url: str, host: str) -> str | None:
+    """`href` made absolute if it may be followed from `page_url`, else None."""
+    href = (href or "").strip()
+    if not href or href.startswith(("#", "mailto:", "javascript:", "tel:", "magnet:")):
+        return None
+
+    absolute = urljoin(page_url, href)
+    parts = urlsplit(absolute)
+
+    if parts.scheme not in ("http", "https") or parts.netloc.lower() != host:
+        return None
+    if len(absolute) > _MAX_URL_CHARS:
+        return None
+    if _is_file(parts.path) or _SKIP_PATH.search(parts.path + ("?" if parts.query else "")):
+        return None
+    return absolute
+
+
+def _followable_key(href: str, page_url: str, host: str) -> str | None:
+    absolute = _followable(href, page_url, host)
+    return normalize_url(absolute) if absolute else None
 
 
 def looks_like_file(path: str) -> bool:

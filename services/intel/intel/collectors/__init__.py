@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import (
+    CapturedJson,
     Collector,
     FetchedPage,
     FetchResult,
@@ -11,26 +12,41 @@ from .base import (
     is_page_content_type,
     page_url,
 )
-from .html import to_text
+from .html import (
+    BLOCK_BREAK,
+    RECORD_SEPARATOR,
+    DetailPage,
+    detail_page,
+    listing_blocks,
+    tile_links,
+    to_text,
+)
 from .links import extract_links, normalize_url
 from .onion import classify_onion_urls, find_onion_urls, onion_host
 from .tor_http import TorHttpCollector
 
 __all__ = [
+    "BLOCK_BREAK",
+    "RECORD_SEPARATOR",
+    "CapturedJson",
     "Collector",
+    "DetailPage",
     "FetchResult",
     "FetchedPage",
     "TorHttpCollector",
     "classify_exception",
     "classify_onion_urls",
     "classify_status",
+    "detail_page",
     "extract_links",
     "find_onion_urls",
     "get_collector",
     "is_page_content_type",
+    "listing_blocks",
     "normalize_url",
     "onion_host",
     "page_url",
+    "tile_links",
     "to_text",
 ]
 

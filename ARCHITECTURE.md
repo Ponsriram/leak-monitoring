@@ -147,9 +147,10 @@ with raw SQL but never migrates them.
                Tor; transient failures go back to the queue with a delay (see "Crawl cycles")
 3. HASH        sha256 of the cleaned text
                  └── seen this hash before? STOP. Nothing downstream runs.
-4. PARSE       selectolax → clean text
+4. PARSE       selectolax → clean text; a listing laid out as repeated tiles keeps one
+               block of text per tile (see "Tile listings" below)
 5. EXTRACT     extractor → labelled spans (victim, url, date, size, status, location, sector)
-6. LINK        linker groups spans into discrete leaks
+6. LINK        linker groups spans into discrete leaks — one per tile on a tiled listing
 7. NORMALIZE   dates → timestamptz, sizes → bytes, groups → slugs,
                country aliases + ccTLD → one canonical country, name words → sector
 8. VALIDATE    Pydantic ExtractedLeak, or it does not proceed
@@ -204,9 +205,12 @@ arq cron (every CRAWL_SWEEP_INTERVAL_MINUTES)  or  a Sync request
   does: only evidence of an end prunes.
 - **Link following** (`CRAWL_FOLLOW_LINKS`): from a page whose content is new or changed, up to
   `CRAWL_LINKS_PER_PAGE` new same-host links, `CRAWL_LINK_DEPTH` deep, `CRAWL_LINK_MAX_PAGES` per source
-  per cycle; never a file, an account page, another host or an internal address. Followed pages are
-  stored and scanned for exposures but not run through the listing extractor. They are recrawled when
-  `CRAWL_LINK_INTERVAL` (a week) has elapsed, without their listing having to change.
+  per cycle; never a file, an account page, another host or an internal address. On a tiled listing
+  the links inside new or changed tiles are offered first and links inside unchanged tiles not at all,
+  so the per-page budget goes on new victims' pages rather than the menu. Followed pages are stored,
+  scanned for exposures, and read as one victim's page (see "Detail pages" below) — never run through
+  the listing extractor. They are recrawled when `CRAWL_LINK_INTERVAL` (a week) has elapsed, without
+  their listing having to change.
 - **Reporting** reuses existing tables: `crawl_runs` per source (what the Sources page reads), and
   `crawl_cycles` with a stored `summary` (sources, URL outcomes, retries, links, HTTP and error
   histograms). The Sync button's `crawl_requests` lifecycle is unchanged.
@@ -217,6 +221,58 @@ fails**. A cycle is `failed` only when nothing worked; a source down while other
 
 The older time-budget settings (`CRAWL_RUN_WINDOW`, `CRAWL_SOURCE_*_BUDGET`) and doubling page waves
 belong to the legacy crawler only.
+
+### Tile listings: one tile, one victim
+
+Many leak sites lay their listing out as repeated tiles, cards or table rows. Flattened to one
+text, the tile boundaries were gone, and the linker — which attributes by reading order — folded
+any tile whose name had no legal suffix and no nearby domain ("Grupo Caberj", "Wavecrest HFA")
+into the tile before it. inc-ransom stored one leak whose summary was four victims' names and
+their icon labels.
+
+`collectors/html.py` now finds the repeated blocks before flattening (`listing_blocks`): the
+element whose children mostly share one tag + class signature, three or more of them with real
+text, scored by total text so a menu never wins, and only when they hold a good share of the
+page. A grid's rows are stepped through to the tiles inside them. `to_text` then writes the
+text before the list, each block, and the text after, separated by a record-separator line
+(`BLOCK_BREAK`). Text is what is stored and hashed, so the boundaries travel with it.
+
+`pipeline.extract_page` extracts each block on its own, at most one leak per block: the name is
+the block's first line that reads as a name (no suffix or domain needed inside a tile), and the
+domain, date, size, status, country — including a flag image, icon class or emoji — sector and
+summary come from that block alone. Text outside the blocks makes no leaks. A page with no
+repeated structure produces exactly the text it always did and goes through the whole-page
+linker unchanged. `item_selector` in `sources.yaml` overrides detection for one source.
+
+Rows written by the whole-page linker are corrected, not duplicated: identity is unchanged
+(`dedupe_hash` is group + domain-or-name), and the first time a tile record (`extraction.mode =
+"tile"`) meets such a row it replaces the row's summary, status, date, size, country, sector and
+incident types outright instead of coalescing with them.
+
+### Detail pages fill in their victim, and never create one
+
+A page reached by following a link (`crawl_urls.kind = 'link'`, or the legacy crawler's link walk)
+is read as one victim's own page (`collectors.detail_page`, `pipeline.extract_detail`): name
+candidates from its `<h1>`, `<h2>`, title-like elements and `<title>`, and every other field —
+domain, country, size, date, status, and revenue and description into the summary — from its main
+text with the header, nav and footer removed. `Storage.enrich_leak` then finds the leak this source
+already holds for that victim, by domain or by name (lowercased, punctuation collapsed), and fills
+only its empty fields. A page that matches no listed victim creates nothing and is logged: only the
+listing says who is a victim. `dedupe_hash` is never touched, so the listing keeps finding the row.
+
+### JSON a JavaScript site loads
+
+The browser collector registers a response handler before it navigates and keeps every response
+from the page's own host with a JSON content type, up to `CRAWL_MAX_BYTES` in total
+(`FetchResult.json_responses`; None when there were none, so nothing changes for most pages). A
+source may declare where its victim records are in that JSON (`json_items` in `sources.yaml`,
+migration 0015): the dotted path to the array and the keys for name, domain, country, revenue,
+description and date. When a captured response fits, the listing's leaks are built from those
+records (`extract/json_items.py`, `extraction.mode = "json"`) instead of from its text, and the
+mapped fields are appended to the stored text so a change that shows only in the JSON still
+changes the page hash. No mapping is configured for any source; START.md explains how to write
+one from Tor Browser's DevTools. The collector never clicks, so data a site loads only on a click
+is not seen.
 
 ### Why the API cannot start a crawl itself
 
@@ -356,12 +412,11 @@ Deleting a source cascades to its `crawl_runs` and `raw_pages`, but `leaks.sourc
 
 ## Known limitations
 
-**Extraction quality on dense pages.** The linker assumes "a victim span opens a record,
-following attributes attach to it". That holds for a page with a handful of listings; an
-index page with hundreds loses its boundaries once flattened to text, and attributes attach
-to the wrong victim — and summaries, which are cut along the same boundaries, inherit the
-error. The fix is per-listing DOM segmentation. LockBit 5.0's layout is the clearest case:
-its index yields almost no listings.
+**Extraction quality on dense pages without tiles.** A listing laid out as repeated tiles,
+cards or rows is extracted one block at a time (see "Tile listings"). A listing that is one
+long run of text — no repeated elements — still goes through the whole-page linker, which
+assumes "a victim span opens a record, following attributes attach to it" and needs a legal
+suffix or a nearby domain before it accepts a name.
 
 **Location and sector are inferred, not reported.** No leak site publishes either as a
 field. `victim_country` comes from a gazetteer match on the listing text, or — far more
@@ -385,8 +440,9 @@ what grows the frontier in practice.
 (`CRAWL_DISCOVER_MIRRORS`) but never switches to one; `CRAWL_MIRROR_FAILOVER` affects only the
 legacy crawler. An operator can promote one with `intel mirrors use`.
 
-**Followed pages are not extracted for leaks.** They are stored and scanned for exposures, but a
-victim's own page is not run through the listing extractor.
+**Detail pages only enrich.** A victim's own page fills empty fields of the leak its listing
+created; it never creates a leak, so a victim that appears only on a detail page (not on any
+listing) is not collected. There is no revenue column: revenue is kept in the summary text.
 
 **Out-of-range pages that repeat page 1** (some sites do this) are not detected as the end of a
 listing; they read as unchanged duplicates.

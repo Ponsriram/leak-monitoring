@@ -178,9 +178,16 @@ _TILE_CHROME_WORDS = frozenset(
     {
         "encrypted", "proof", "proofs", "view", "views", "visits", "new", "hot", "top",
         "featured", "pinned", "verified", "updated", "read", "show", "open", "click", "here",
-        "files",
+        "files", "more", "learn", "back", "download", "downloads", "details", "go", "see",
     }
 )
+
+# A field label alone on its line, its value printed on the next: "Revenue:" / "$100 million".
+FIELD_LABEL = re.compile(r"[^\W\d][\w .'&/-]{0,30}:")
+# The same field once joined: "Revenue: $100 million".
+_FIELD_PAIR = re.compile(r"(?P<label>[^\W\d][\w .'&/-]{0,30}):\s*(?P<value>\S.*)")
+# A line that is nothing but a web address — the victim's site, already in its own column.
+_ADDRESS_ONLY = re.compile(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?", re.I)
 _COUNTER = re.compile(r"^\W*[\d.,]+\s*[km]?\+?\W*$", re.I)
 _WORD = re.compile(r"[^\W\d_]+")
 
@@ -230,16 +237,27 @@ def clean_summary(
     """Reduce a listing window to its prose.
 
     `drop` are values the row already shows in their own columns — the victim's name and
-    domain — which some sites repeat on their own line inside the listing. `tile` also drops
-    the icon labels and counters a listing tile prints (`is_chrome_line`).
+    domain — which some sites repeat on their own line inside the listing.
+
+    `tile` is for one listing tile's own text. It also drops the icon labels, counters and
+    buttons a tile prints (`is_chrome_line`) and bare web addresses, and it puts a label
+    printed on its own line back together with its value ("Industry:" / "Software" becomes
+    "Industry: Software"). A field whose value is the name or a web address goes, as does a
+    label left with no value.
     """
     dropped = {value.strip().lower() for value in drop if value}
+    lines = [raw.strip(" \t|•·-–—") for raw in window.splitlines()]
+    if tile:
+        lines = _join_fields(lines)
     kept: list[str] = []
-    for raw in window.splitlines():
-        line = raw.strip(" \t|•·-–—")
+    for line in lines:
         if len(line) < 3:
             continue
-        if tile and is_chrome_line(line):
+        if tile and (
+            is_chrome_line(line)
+            or _ADDRESS_ONLY.fullmatch(line)
+            or _repeats_a_column(line, dropped)
+        ):
             continue
         lowered = line.lower()
         if lowered in dropped or lowered.rstrip("/") in dropped:
@@ -257,3 +275,31 @@ def clean_summary(
         return None
     # Kept whole, however long: the full description is the point of the column.
     return summary
+
+
+def _join_fields(lines: list[str]) -> list[str]:
+    """Rejoin each label printed alone on its line with the value on the next one.
+
+    A label followed by another label, or by nothing, had no value and is dropped.
+    """
+    joined: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if not FIELD_LABEL.fullmatch(line):
+            joined.append(line)
+            continue
+        if index < len(lines) and lines[index] and not FIELD_LABEL.fullmatch(lines[index]):
+            joined.append(f"{line} {lines[index]}")
+            index += 1
+    return joined
+
+
+def _repeats_a_column(line: str, dropped: set[str]) -> bool:
+    """A field whose value the row already shows: "Company: <the name>", "Website: <a url>"."""
+    field = _FIELD_PAIR.fullmatch(line)
+    if field is None:
+        return False
+    value = field.group("value").strip()
+    return value.lower().rstrip("/") in dropped or bool(_ADDRESS_ONLY.fullmatch(value))

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from .describe import is_chrome_line
+from .describe import FIELD_LABEL, is_chrome_line
 from .gazetteer import CCTLD_COUNTRY, COUNTRY_PATTERN, SECTOR_PATTERN, is_country_name
 from .linker import Label, Span
 from .normalize import _DOMAIN_DENYLIST  # noqa: PLC2701 - shared denylist, single source
@@ -193,6 +193,9 @@ class RulesExtractor:
             span
             for span in page_spans
             if span.label not in (Label.VICTIM, Label.LOCATION, Label.SECTOR)
+            # The domain of an email address is a mailbox, not the victim's site: on a
+            # notice card it is the crew's own contact ("…@onionmail.org").
+            and not (span.label == Label.VICTIM_URL and text[max(span.start - 1, 0)] == "@")
         ]
 
         named = block_victim_name(text)
@@ -244,6 +247,24 @@ _NAME_FIELD = re.compile(
 _MAX_NAME_CHARS = 80
 _MAX_NAME_WORDS = 10
 
+# A label alone on its line, its value on the next ("Revenue:" / "$100 million"); and the
+# labels whose value is the victim's name.
+_LABEL_ONLY = FIELD_LABEL
+_NAME_LABEL = re.compile(r"(?:company(?: name)?|victim|target|organi[sz]ation|name)\s*:", re.I)
+
+# A money amount or a bare figure is a field's value, never a name: "$170 million", "€585 m",
+# "431.6 million". A figure only counts when it is the whole line — "3M Company" and
+# "7-Eleven" are names.
+_AMOUNT = re.compile(
+    r"^(?:[$€£¥₹]|(?:usd|eur|gbp)\b)"
+    r"|^[\d.,\s]+(?:million|billion|thousand|mln|bn|[kmb])?\s*(?:usd|eur|gbp|[$€£])?$",
+    re.I,
+)
+
+# Site notices on rhysida-style card grids talk to the reader: "How you can buy BTC", "We
+# will post news about our company here". Company names do not say "we" or "you".
+_ADDRESSES_A_READER = re.compile(r"\b(?:we|you|your|we'll|you'll|we're|you're)\b", re.I)
+
 # A flag emoji is two regional-indicator letters spelling an ISO country code.
 _FLAG_EMOJI = re.compile("[\U0001f1e6-\U0001f1ff]{2}")
 
@@ -256,34 +277,65 @@ def block_victim_name(text: str) -> tuple[str, int, int] | None:
     """The victim's name in one listing block: (name, start, end), or None.
 
     The first line that is not chrome is the name. Skipped on the way: counters, dates,
-    sizes, status words, icon labels (`describe.is_chrome_line`), lines made only of words
-    in `_NOT_AN_ORG`, countries, field labels such as "Revenue:", and bare domains — those
-    are the victim's site, and a tile that prints the link above the name still has a name.
-    "Company: Acme" yields "Acme". A first content line too long to be a name means the
-    block has no name line, and None is returned rather than a sentence.
+    sizes, money amounts, status words, icon labels (`describe.is_chrome_line`), lines made
+    only of words in `_NOT_AN_ORG`, countries, field labels such as "Revenue: $5M", and bare
+    domains — those are the victim's site, and a tile that prints the link above the name
+    still has a name.
+
+    Fields come in two shapes and both are read: "Company: Acme" on one line yields "Acme";
+    a label alone on its line ("Name:") makes the next line its value — the name, even a
+    bare domain, after a name label; something to skip ("$170 million" after "Revenue:")
+    after any other.
+
+    A first content line that reads as a sentence — too long, a question or an exclamation,
+    or speaking as "we" or "you" — means the block is a notice, not a victim, and None is
+    returned rather than a sentence.
     """
+    lines: list[tuple[str, int]] = []
     offset = 0
     for raw in text.split("\n"):
-        line_start = offset
-        offset += len(raw) + 1
         line = raw.strip()
-        if not line:
-            continue
-        start = line_start + raw.index(line)
+        if line:
+            lines.append((line, offset + raw.index(line)))
+        offset += len(raw) + 1
+
+    index = 0
+    while index < len(lines):
+        line, start = lines[index]
+        index += 1
 
         field = _NAME_FIELD.match(line)
         if field is not None:
             value = field.group("value").strip()
-            return value, start + field.start("value"), start + field.start("value") + len(value)
+            at = start + field.start("value")
+            return value, at, at + len(value)
+
+        if _LABEL_ONLY.fullmatch(line):
+            if index < len(lines) and not _LABEL_ONLY.fullmatch(lines[index][0]):
+                value, at = lines[index]
+                index += 1
+                if _NAME_LABEL.fullmatch(line) and _is_name_like(value):
+                    return value, at, at + len(value)
+            continue
 
         if _is_chrome_or_field(line):
             continue
-        if len(line) > _MAX_NAME_CHARS or len(line.split()) > _MAX_NAME_WORDS:
-            return None
-        if line.endswith((".", "!", "?")) and len(line.split()) > 4:
+        if not _is_name_like(line):
             return None
         return line, start, start + len(line)
     return None
+
+
+def _is_name_like(line: str) -> bool:
+    """Short, and not a sentence: the shape of a company's name."""
+    words = line.split()
+    if len(line) > _MAX_NAME_CHARS or len(words) > _MAX_NAME_WORDS:
+        return False
+    if "?" in line or "!" in line or _ADDRESSES_A_READER.search(line):
+        return False
+    if _AMOUNT.match(line):
+        return False
+    return not (line.endswith(".") and len(words) > 4)
 
 
 def _is_chrome_or_field(line: str) -> bool:
@@ -292,6 +344,8 @@ def _is_chrome_or_field(line: str) -> bool:
     if any(pattern.fullmatch(line) for pattern in _DATE_PATTERNS):
         return True
     if _SIZE_PATTERN.fullmatch(line) or _STATUS_PATTERN.fullmatch(line):
+        return True
+    if _AMOUNT.match(line):
         return True
     if _NON_VICTIM_LABEL.match(line) or _FIELD_LINE.match(line):
         return True

@@ -29,6 +29,7 @@ from intel.collectors import (
 )
 from intel.crawl.fetch import CrawlFetcher
 from intel.crawl.queue import ClaimedUrl
+from intel.extract.rules import block_victim_name
 from intel.models import ExtractedLeak
 from intel.pipeline import crawl_source, extract_page, split_blocks
 from intel.storage import UpsertResult
@@ -338,3 +339,100 @@ async def test_both_engines_honour_the_item_selector(use_fake_collector) -> None
     await fetcher(claimed(item_selector=selector))
 
     assert queue.saved[0][1] == legacy.saved[0][1] == to_text(html, item_selector=selector)
+
+
+# ---------------------------------------------------------------- shapes seen on live pages
+#
+# Layouts taken from real tile pages after the first live run (names here are invented): a
+# label on one line with its value on the next, a name repeated in a "Company:" field beside
+# a "Website:" link, and card grids that mix notices in with — or instead of — victims.
+
+
+def blocks_text(*blocks: str) -> str:
+    return BLOCK_BREAK.join(["", *blocks, ""])
+
+
+SPLIT_FIELDS = (
+    "Name:\nnorthgate-labs.example\nRevenue:\n$170 million\nType:\nResearch\n"
+    "Country:\nCanada\nDate:\n04/15/2025 06:44\nSize:\n214,2 GBytes\nShow/Download files\nnew"
+)
+NAMED_FIELDS = (
+    "Name:\nKestrel Freight Co., Ltd\nRevenue:\n$100 million\nType:\nManufacturing\n"
+    "Show/Download files"
+)
+COMPANY_CARD = (
+    "\U0001f1f2\U0001f1fe\nPort Of Example\nPublished: 2026-09-11\nCompany:\nPort Of Example\n"
+    "Website:\nhttps://www.port-of-example.my\nIndustry:\nMarine Shipping & Transportation\n"
+    "GDPR:\nNo\nData Size:\n200G\nRead More →"
+)
+NOTICES = [
+    "NEWS\nWe will post news about our company here\nIf you see news about us, send them to us",
+    "How you can buy BTC\nCoinBase\nBuy btc in 15 minutes,\neasy and safe",
+    "Troublesome situation? Reach out via email, we'll handle it\ncrew@mailbox.example",
+]
+
+
+def test_a_value_on_the_line_after_its_label_is_never_the_name() -> None:
+    leaks = extract(blocks_text(SPLIT_FIELDS, NAMED_FIELDS))
+    # "Name:" names the victim even when its value is a bare domain; "$170 million" is the
+    # value of "Revenue:" and never a name.
+    assert [(leak.victim_name, leak.victim_domain) for leak in leaks] == [
+        ("northgate-labs.example", "northgate-labs.example"),
+        ("Kestrel Freight Co., Ltd", None),
+    ]
+
+
+def test_split_fields_are_rejoined_in_the_summary() -> None:
+    (leak,) = extract(blocks_text(SPLIT_FIELDS))
+    assert leak.summary == (
+        "Revenue: $170 million Type: Research Country: Canada Size: 214,2 GBytes"
+    )
+
+
+def test_fields_that_repeat_a_column_and_buttons_leave_the_summary() -> None:
+    (leak,) = extract(blocks_text(COMPANY_CARD))
+    assert leak.victim_name == "Port Of Example"
+    assert leak.victim_domain == "port-of-example.my"
+    assert leak.victim_country == "Malaysia"
+    # No "Company:" (the name), no "Website:" (a URL), no empty labels, no "Read More".
+    assert leak.summary == "Industry: Marine Shipping & Transportation GDPR: No Data Size: 200G"
+
+
+def test_notice_cards_are_not_victims() -> None:
+    assert extract(blocks_text(*NOTICES)) == []
+
+
+def test_notice_cards_among_victims_leave_only_the_victims() -> None:
+    cards = "".join(
+        f'<div class="card">{"".join(f"<p>{line}</p>" for line in block.splitlines())}</div>'
+        for block in [*NOTICES, SPLIT_FIELDS, NAMED_FIELDS]
+    )
+    leaks = extract(to_text(f'<body><div class="grid">{cards}</div></body>'))
+    assert [leak.victim_name for leak in leaks] == [
+        "northgate-labs.example",
+        "Kestrel Freight Co., Ltd",
+    ]
+
+
+def test_an_email_address_does_not_identify_a_tile() -> None:
+    # The mailbox's domain is not the victim's site...
+    (leak,) = extract(blocks_text("Acme Plastics\nsales@mailbox.example"))
+    assert leak.victim_domain is None
+    # ...and on its own it is not a victim at all.
+    assert extract(blocks_text("Write to us any time!\nteam@mailbox.example")) == []
+
+
+@pytest.mark.parametrize(
+    ("block", "name"),
+    [
+        ("$431.6 million\nAcme Plastics", "Acme Plastics"),
+        ("€585 million\nOrion Pharma", "Orion Pharma"),
+        ("USD 5M\nBlue Ridge Dairy", "Blue Ridge Dairy"),
+        ("3M Company\n3m.example", "3M Company"),
+        ("7-Eleven Inc\n7-eleven.example", "7-Eleven Inc"),
+        ("Our Lady of Lourdes Hospital\nlourdes.example", "Our Lady of Lourdes Hospital"),
+    ],
+)
+def test_money_is_not_a_name_but_names_with_figures_are(block: str, name: str) -> None:
+    assert block_victim_name(block) is not None
+    assert block_victim_name(block)[0] == name  # type: ignore[index]

@@ -18,6 +18,7 @@ import structlog
 from .collectors import (
     BLOCK_BREAK,
     RECORD_SEPARATOR,
+    CapturedJson,
     DetailPage,
     classify_onion_urls,
     detail_page,
@@ -31,6 +32,13 @@ from .collectors import (
 )
 from .config import Settings
 from .extract import Label, Span, get_extractor, link_block, link_spans
+from .extract.json_items import (
+    JsonMapping,
+    items_text,
+    leaks_from_items,
+    match_items,
+    parse_mapping,
+)
 from .extract.rules import block_victim_name
 from .extract.secrets import find_exposures
 from .models import ExtractedLeak
@@ -103,6 +111,8 @@ class _Page:
     page_no: int
     url: str
     html: str | None
+    # JSON the browser saw the page load, when the source maps its records from JSON.
+    json_responses: list[CapturedJson] | None = None
 
 
 @dataclass(slots=True)
@@ -201,6 +211,8 @@ async def crawl_source(
     # rather than queueing behind each other.
     stagger = source.request_delay_seconds / width if source.request_delay_seconds > 0 else 0.0
 
+    json_mapping = parse_mapping(source.json_items) if source.collector == "browser" else None
+
     async def fetch_page(page_no: int, base: str, delay: float = 0.0) -> _Page | None:
         """Fetch one page. None means this source has no URL for that page number."""
         url = page_url(base, page_no, source.pagination_style)
@@ -209,7 +221,14 @@ async def crawl_source(
         if delay > 0:
             await asyncio.sleep(delay)
         async with slots:
-            return _Page(page_no, url, await collector.fetch(url))
+            if json_mapping is None:
+                return _Page(page_no, url, await collector.fetch(url))
+            # The JSON the page loads only comes back on the detailed result. For the browser
+            # collector `fetch` is this same single attempt, unwrapped.
+            fetched = await collector.fetch_detailed(url)  # type: ignore[attr-defined]
+            collector.last_error = fetched.error
+            html = fetched.text if fetched.kind == "ok" else None
+            return _Page(page_no, url, html, fetched.json_responses)
 
     async def fetch_wave(pages: list[int], base: str) -> list[_Page]:
         """Fetch a whole wave at once, returned in page order."""
@@ -269,6 +288,10 @@ async def crawl_source(
             log.info("page empty, stopping", source=source.slug, page=page.page_no)
             return False
 
+        json_records = match_items(page.json_responses, json_mapping)
+        if json_records is not None and json_mapping is not None:
+            text = f"{text}\n{items_text(json_records, json_mapping)}"
+
         ingested = await ingest_page(
             storage=storage,
             settings=settings,
@@ -278,6 +301,8 @@ async def crawl_source(
             url=page.url,
             page_no=page.page_no,
             text=text,
+            json_records=json_records,
+            json_mapping=json_mapping,
         )
 
         if not ingested.changed:
@@ -548,6 +573,8 @@ async def ingest_page(
     text: str,
     extract_leaks: bool = True,
     detail: DetailPage | None = None,
+    json_records: list[dict] | None = None,
+    json_mapping: JsonMapping | None = None,
 ) -> IngestResult:
     """Store a fetched page and run it through extraction. The one place this happens.
 
@@ -560,6 +587,10 @@ async def ingest_page(
     it is never run through the listing extractor and never creates a leak. With `detail` (the
     page read by `collectors.detail_page`) it fills the empty fields of the leak the listing
     already holds for that victim — see `extract_detail` and `Storage.enrich_leak`.
+
+    `json_records` are the victim records a browser source's page loaded as JSON, picked out
+    by the source's `json_mapping` (`extract.json_items`). When there are any, a listing's
+    leaks are built from them instead of from its text.
 
     Raises if storage or extraction fails, after the page row may already have been written.
     That is deliberate and safe: the row is not counted as handled until `mark_extracted`
@@ -579,14 +610,23 @@ async def ingest_page(
     upserted = UpsertResult()
     changed_blocks: set[str] | None = None
     if extract_leaks:
-        leaks = extract_page(
-            text,
-            source_group=source.slug,
-            source_url=url,
-            page_no=page_no,
-            extractor_name=extractor.name,  # type: ignore[attr-defined]
-            extractor=extractor,
-        )
+        if json_records is not None and json_mapping is not None:
+            leaks = leaks_from_items(
+                json_records,
+                json_mapping,
+                source_group=source.slug,
+                source_url=url,
+                page_no=page_no,
+            )
+        else:
+            leaks = extract_page(
+                text,
+                source_group=source.slug,
+                source_url=url,
+                page_no=page_no,
+                extractor_name=extractor.name,  # type: ignore[attr-defined]
+                extractor=extractor,
+            )
         upserted = await storage.upsert_leaks(leaks, source_id=source.id)
         blocks = split_blocks(text)
         if blocks is not None:

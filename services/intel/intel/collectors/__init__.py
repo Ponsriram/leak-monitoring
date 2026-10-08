@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .base import (
+    CapturedJson,
     Collector,
     FetchedPage,
     FetchResult,
@@ -27,6 +28,7 @@ from .tor_http import TorHttpCollector
 __all__ = [
     "BLOCK_BREAK",
     "RECORD_SEPARATOR",
+    "CapturedJson",
     "Collector",
     "DetailPage",
     "FetchResult",

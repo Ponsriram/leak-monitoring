@@ -51,6 +51,9 @@ class SourceRow:
     # CSS selector for one listing block on this source (migration 0014); None means the
     # blocks are detected (`collectors.html.listing_blocks`).
     item_selector: str | None = None
+    # Where the victim records are in the JSON a browser source loads (migration 0015), as
+    # the jsonb text the row holds; read by `extract.json_items.parse_mapping`.
+    json_items: str | None = None
 
     @property
     def crawl_url(self) -> str:
@@ -244,7 +247,8 @@ class Storage:
             select id, slug, name, base_url, collector, pagination_style, max_pages,
                    deep_crawl_interval_seconds, last_deep_crawl_at,
                    crawl_interval_seconds, request_delay_seconds, enabled,
-                   last_crawl_at, consecutive_failures, active_url, item_selector
+                   last_crawl_at, consecutive_failures, active_url, item_selector,
+                   json_items::text as json_items
             from sources
             where (not $1::boolean) or enabled
             order by slug
@@ -259,7 +263,8 @@ class Storage:
             select id, slug, name, base_url, collector, pagination_style, max_pages,
                    deep_crawl_interval_seconds, last_deep_crawl_at,
                    crawl_interval_seconds, request_delay_seconds, enabled,
-                   last_crawl_at, consecutive_failures, active_url, item_selector
+                   last_crawl_at, consecutive_failures, active_url, item_selector,
+                   json_items::text as json_items
             from sources where slug = $1
             """,
             slug,
@@ -303,9 +308,9 @@ class Storage:
                     insert into sources (
                         slug, name, base_url, collector, pagination_style, max_pages,
                         crawl_interval_seconds, request_delay_seconds, enabled, notes,
-                        item_selector
+                        item_selector, json_items
                     )
-                    values ($1,$2,$3,$4::collector_kind,$5,$6,$7,$8,$9,$10,$11)
+                    values ($1,$2,$3,$4::collector_kind,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
                     on conflict (slug) do update set
                         name = excluded.name,
                         base_url = excluded.base_url,
@@ -317,6 +322,7 @@ class Storage:
                         -- enabled is deliberately absent: see the docstring.
                         notes = excluded.notes,
                         item_selector = excluded.item_selector,
+                        json_items = excluded.json_items,
                         updated_at = now()
                     returning (xmax = 0) as was_inserted
                     """,
@@ -331,6 +337,7 @@ class Storage:
                     bool(item.get("enabled", True)),
                     item.get("notes"),
                     item.get("item_selector") or None,
+                    json.dumps(item["json_items"]) if item.get("json_items") else None,
                 )
                 if result and result["was_inserted"]:
                     inserted += 1

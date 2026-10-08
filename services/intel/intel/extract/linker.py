@@ -225,6 +225,43 @@ def _attach(record: _Record, span: Span) -> None:
             record.sector_raws.append(span.text)
 
 
+def leak_from_fields(
+    *,
+    victim_name: str | None,
+    victim_url: str | None,
+    date_raw: str | None,
+    location_raws: list[str],
+    summary: str | None,
+    source_group: str,
+    source_url: str | None,
+    page_no: int,
+    mode: str,
+    method: str = "rules",
+) -> ExtractedLeak | None:
+    """A leak from fields a source already gives one by one (see `extract.json_items`).
+
+    Normalized exactly as a linked record is — domain, country and sector, date, incident
+    types — so a structured record and a scraped one cannot disagree about the same victim.
+    """
+    record = _Record(
+        victim_name=victim_name,
+        victim_url=victim_url,
+        date_raw=date_raw,
+        location_raws=location_raws,
+        summary=summary,
+    )
+    leak = _to_leak(
+        record,
+        source_group=source_group,
+        source_url=source_url,
+        page_no=page_no,
+        method=method,
+        model_version=None,
+        mode=mode,
+    )
+    return leak if leak.is_usable else None
+
+
 def link_block(
     spans: list[Span],
     *,

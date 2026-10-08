@@ -260,6 +260,20 @@ already holds for that victim, by domain or by name (lowercased, punctuation col
 only its empty fields. A page that matches no listed victim creates nothing and is logged: only the
 listing says who is a victim. `dedupe_hash` is never touched, so the listing keeps finding the row.
 
+### JSON a JavaScript site loads
+
+The browser collector registers a response handler before it navigates and keeps every response
+from the page's own host with a JSON content type, up to `CRAWL_MAX_BYTES` in total
+(`FetchResult.json_responses`; None when there were none, so nothing changes for most pages). A
+source may declare where its victim records are in that JSON (`json_items` in `sources.yaml`,
+migration 0015): the dotted path to the array and the keys for name, domain, country, revenue,
+description and date. When a captured response fits, the listing's leaks are built from those
+records (`extract/json_items.py`, `extraction.mode = "json"`) instead of from its text, and the
+mapped fields are appended to the stored text so a change that shows only in the JSON still
+changes the page hash. No mapping is configured for any source; START.md explains how to write
+one from Tor Browser's DevTools. The collector never clicks, so data a site loads only on a click
+is not seen.
+
 ### Why the API cannot start a crawl itself
 
 The worker owns Tor and the Postgres advisory lock that keeps two crawls off one Tor daemon;

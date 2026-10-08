@@ -3,6 +3,7 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -53,6 +54,14 @@ export const sources = pgTable(
      * detection for a site where it picks the wrong element. Null means "detect".
      */
     itemSelector: text("item_selector"),
+
+    /**
+     * Where this source's victim records sit in the JSON its pages load by XHR/fetch: the
+     * path to the array and the field names for name, domain, country, revenue, description
+     * and date. Optional, and only read for `browser` sources, whose collector captures that
+     * JSON. Null means "parse the rendered page". See START.md for how to fill it in.
+     */
+    jsonItems: jsonb("json_items"),
 
     /** Per-source cadence, so a fast-moving leak site isn't throttled by a dead one. */
     crawlIntervalSeconds: integer("crawl_interval_seconds").notNull().default(3600),

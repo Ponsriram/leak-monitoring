@@ -29,6 +29,7 @@ import structlog
 from ..collectors import detail_page, extract_links, get_collector, tile_links, to_text
 from ..config import Settings
 from ..extract import get_extractor
+from ..extract.json_items import items_text, match_items, parse_mapping
 from ..pipeline import (
     MIN_PAGE_TEXT_CHARS,
     SourceIdent,
@@ -190,6 +191,17 @@ class CrawlFetcher:
             # Past page 1 an empty page is not a failure: it is where the listing ends.
             return Outcome("ok", result="empty", **base)
 
+        # A browser source that maps its records from the JSON its page loads: the records
+        # are appended to the text, so the hash sees a change that shows only in the JSON.
+        json_mapping = (
+            parse_mapping(url.json_items)
+            if url.kind == "listing" and url.collector == "browser"
+            else None
+        )
+        json_records = match_items(fetched.json_responses, json_mapping)
+        if json_records is not None and json_mapping is not None:
+            text = f"{text}\n{items_text(json_records, json_mapping)}"
+
         digest = content_hash(text)
 
         if url.content_sha256 == digest:
@@ -210,6 +222,8 @@ class CrawlFetcher:
                 extract_leaks=url.kind == "listing",
                 # A followed page is one victim's own page: it fills in that victim's leak.
                 detail=detail_page(fetched.text or "") if url.kind == "link" else None,
+                json_records=json_records,
+                json_mapping=json_mapping,
             )
         except Exception as exc:  # noqa: BLE001 - reported as a failed attempt, never raised
             # The old hash stays. The page row may already be stored, but it is not marked

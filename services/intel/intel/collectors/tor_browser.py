@@ -22,16 +22,72 @@ import contextlib
 import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 
-from .base import FetchResult, classify_exception, classify_status, is_page_content_type
+from .base import (
+    CapturedJson,
+    FetchResult,
+    classify_exception,
+    classify_status,
+    is_page_content_type,
+)
 
 log = structlog.get_logger(__name__)
 
 # Slack on top of the navigation timeout for the network-idle wait and reading the DOM back.
 # Together they are the longest one browser fetch may take, which the crawl lease must exceed.
 _SETTLE_SECONDS = 20
+
+# How long to wait, after the DOM is read, for JSON bodies still being read off the wire.
+_JSON_DRAIN_SECONDS = 5
+
+
+class _JsonCapture:
+    """Keeps the JSON a page loads from its own host while it renders.
+
+    A site that fills its listing — or a victim's details — by XHR/fetch has that data in
+    JSON before it is ever in the DOM, and a detail panel that opens on click never reaches
+    the DOM at all. Only responses from the page's own host with a JSON content type are kept,
+    and only up to `max_bytes` in total: the same ceiling as the page itself.
+    """
+
+    def __init__(self, page_url: str, max_bytes: int | None) -> None:
+        self._host = urlsplit(page_url).netloc.lower()
+        self._max_bytes = max_bytes
+        self._used = 0
+        self._reads: list[asyncio.Task[None]] = []
+        self.captured: list[CapturedJson] = []
+
+    def on_response(self, response: Any) -> None:
+        """`page.on("response")` handler. Synchronous: bodies are read in tasks."""
+        if urlsplit(response.url).netloc.lower() != self._host:
+            return
+        mime = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if not mime.endswith("json"):
+            return
+        self._reads.append(asyncio.ensure_future(self._read(response)))
+
+    async def _read(self, response: Any) -> None:
+        try:
+            body = await response.text()
+        except Exception:  # noqa: BLE001 - a body that cannot be read is simply not kept
+            return
+        size = len(body.encode("utf-8"))
+        if self._max_bytes is not None and self._used + size > self._max_bytes:
+            log.info("captured JSON over the byte limit, dropped", url=response.url, bytes=size)
+            return
+        self._used += size
+        self.captured.append(CapturedJson(response.url, body))
+
+    async def drain(self) -> list[CapturedJson] | None:
+        """Wait briefly for bodies still being read; None if there was nothing to keep."""
+        if self._reads:
+            _, late = await asyncio.wait(self._reads, timeout=_JSON_DRAIN_SECONDS)
+            for task in late:
+                task.cancel()
+        return self.captured or None
 
 
 # Network and proxy failures as Firefox and Playwright word them: the circuit would not build,
@@ -142,6 +198,9 @@ class TorBrowserCollector:
         assert self._context is not None
 
         page = await self._context.new_page()
+        # Registered before navigating, so the requests the page makes while it loads are seen.
+        capture = _JsonCapture(url, self._max_bytes)
+        page.on("response", capture.on_response)
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
             status = response.status if response is not None else None
@@ -175,7 +234,9 @@ class TorBrowserCollector:
                 return result(
                     "permanent", size_bytes=size, error=f"page exceeds {self._max_bytes} bytes"
                 )
-            return result("ok", text=html, size_bytes=size)
+            return result(
+                "ok", text=html, size_bytes=size, json_responses=await capture.drain()
+            )
         finally:
             await page.close()
 

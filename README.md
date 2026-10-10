@@ -20,7 +20,7 @@
 npm run infra:up:full
 ```
 
-Open **http://localhost:8080**. Full walkthrough, credentials and crawling instructions:
+Open **http://localhost:8080**.Full walkthrough, credentials and crawling instructions:
 **[START.md](START.md)**
 
 | Document | What's in it |

@@ -32,7 +32,7 @@ Open **http://localhost:8080**.Full walkthrough, credentials and crawling instru
 
 ## What it does
 
-Monitors ransomware leak sites on Tor, extracts victim disclosures, and surfaces them
+Monitors ransomware leak sites on Tor,extracts victim disclosures, and surfaces them
 through a threat-intel console.
 
 - **Automated collection** — crawls monitored onion services on a schedule, over Tor

@@ -17,7 +17,7 @@
 ## ▶ Run it
 
 ```bash
-npm run infra:up:full
+npm run infra:up:full // run this to build the changes
 ```
 
 Open **http://localhost:8080**.Full walkthrough, credentials and crawling instructions:

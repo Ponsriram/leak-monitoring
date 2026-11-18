@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { StatTile } from "../../components/StatTile";
 import { EmptyState, ErrorState } from "../../components/states";
 import { formatRelative } from "../../lib/format";
@@ -17,6 +17,16 @@ const LeaksPerGroupChart = lazy(() =>
 );
 
 const ChartFallback = () => <div className="skeleton chart-box" />;
+
+/**
+ * The windows the daily-volume chart can be read over.
+ *
+ * Trailing windows rather than calendar months: `/api/stats/leaks-per-day` counts back from
+ * today in the browser's zone and zero-fills, so every option is one `days` value and the
+ * cache key already carries it. 90 is included because a 30-day window cannot show whether
+ * a quiet fortnight is unusual for a group.
+ */
+const DAY_RANGES = [7, 30, 90] as const;
 
 /** Collection is scheduled hourly, so anything past ~2 hours means runs are being missed. */
 const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
@@ -39,7 +49,9 @@ function collectionTone(
 
 export function DashboardPage() {
   const summary = useSummary();
-  const perDay = useLeaksPerDay(30);
+  // Local state only: the window is a reading choice, not something to persist or route on.
+  const [rangeDays, setRangeDays] = useState<number>(30);
+  const perDay = useLeaksPerDay(rangeDays);
   const perGroup = useLeaksPerGroup(8);
 
   return (
@@ -105,7 +117,25 @@ export function DashboardPage() {
       <div className="grid-charts grid-trend">
         <section className="card">
           <div className="card-head">
-            <h2>Leaks per day — last 30 days</h2>
+            <h2>Leaks per day — last {rangeDays} days</h2>
+            {/*
+              Same segmented control as the Live Threat Map, so the two time pickers in the
+              app look and behave alike. TanStack Query keys on `days`, so a window already
+              looked at comes back from cache instead of refetching.
+            */}
+            <div className="segmented" role="group" aria-label="Chart time window">
+              {DAY_RANGES.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={rangeDays === value ? "active" : undefined}
+                  onClick={() => setRangeDays(value)}
+                  aria-pressed={rangeDays === value}
+                >
+                  {value}d
+                </button>
+              ))}
+            </div>
           </div>
           <div className="card-body">
             {perDay.isPending ? (

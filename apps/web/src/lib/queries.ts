@@ -236,6 +236,10 @@ export function useLeaksPerDay(days = 30) {
         `/api/stats/leaks-per-day${qs({ days, tz })}`,
       ),
     refetchInterval: LIVE_REFETCH,
+    // The dashboard lets the window be switched (7/30/90), which changes the query key.
+    // Without this the chart collapses to a skeleton on every switch; keeping the previous
+    // series on screen means the axis redraws once, when the new counts arrive.
+    placeholderData: (previous) => previous,
   });
 }
 
